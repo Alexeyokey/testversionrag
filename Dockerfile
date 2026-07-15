@@ -7,19 +7,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Этот слой изменится только при изменении зависимостей.
+# Сначала устанавливаем зависимости.
 COPY requirements.txt ./
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --upgrade pip && \
-    python -m pip install --editable .
-    
-# Исходники копируются после зависимостей.
+    python -m pip install -r requirements.txt
+
+# Затем копируем сам проект.
 COPY pyproject.toml README.md ./
 COPY src ./src
 
-# Устанавливаем только сам проект — зависимости уже установлены.
-RUN python -m pip install --no-deps .
+# Editable-установка проекта без повторной установки зависимостей.
+RUN python -m pip install --no-deps --editable .
 
 ENTRYPOINT ["rag"]
 CMD ["--help"]
