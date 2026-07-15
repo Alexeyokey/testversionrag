@@ -52,6 +52,7 @@ services:
       RAG_ENABLE_RERANKER: ${RAG_ENABLE_RERANKER:-true}
       RAG_TRUST_REMOTE_CODE: ${RAG_TRUST_REMOTE_CODE:-true}
     volumes:
+      - ./src:/app/src:ro
       - ./data:/data:ro
       - hf-cache:/root/.cache/huggingface
     depends_on:

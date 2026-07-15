@@ -46,7 +46,7 @@ class TextGenerator:
         self.api_key = api_key
         self.timeout = timeout
 
-    def answer(self, question: str, context: str, chat_history: str = "Предыдущий разговор отсутствует.", answer_language="Русский") -> str:
+    def answer(self, question: str, context: str, chat_history: str = "Предыдущий разговор отсутствует.", answer_language: str ="Русский") -> str:
         human_content = HUMAN_TEMPLATE.format(
             context=context,
             question=question,
