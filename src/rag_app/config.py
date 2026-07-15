@@ -19,6 +19,9 @@ class Settings:
     embedding_model: str = "Octen/Octen-Embedding-0.6B"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     generation_model: str | None = None
+    vllm_base_url: str = "http://localhost:8000/v1"
+    vllm_api_key: str | None = None
+    vllm_timeout: float = 120.0
     trust_remote_code: bool = True
     enable_reranker: bool = True
     chunk_size: int = 512
@@ -41,6 +44,9 @@ class Settings:
             embedding_model=os.getenv("RAG_EMBEDDING_MODEL", defaults.embedding_model),
             reranker_model=os.getenv("RAG_RERANKER_MODEL", defaults.reranker_model),
             generation_model=os.getenv("RAG_GENERATION_MODEL") or None,
+            vllm_base_url=os.getenv("RAG_VLLM_BASE_URL", defaults.vllm_base_url),
+            vllm_api_key=os.getenv("RAG_VLLM_API_KEY") or None,
+            vllm_timeout=float(os.getenv("RAG_VLLM_TIMEOUT", defaults.vllm_timeout)),
             trust_remote_code=_as_bool("RAG_TRUST_REMOTE_CODE", defaults.trust_remote_code),
             enable_reranker=_as_bool("RAG_ENABLE_RERANKER", defaults.enable_reranker),
             chunk_size=int(os.getenv("RAG_CHUNK_SIZE", defaults.chunk_size)),
@@ -65,3 +71,7 @@ class Settings:
             raise ValueError("Веса поиска не могут быть отрицательными")
         if self.vector_weight + self.bm25_weight == 0:
             raise ValueError("Хотя бы один вес поиска должен быть больше нуля")
+        if self.max_new_tokens <= 0:
+            raise ValueError("RAG_MAX_NEW_TOKENS должен быть больше нуля")
+        if self.vllm_timeout <= 0:
+            raise ValueError("RAG_VLLM_TIMEOUT должен быть больше нуля")

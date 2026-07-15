@@ -8,6 +8,29 @@ services:
       - qdrant-data:/qdrant/storage
     restart: unless-stopped
 
+  vllm:
+    image: vllm/vllm-openai:latest
+    command:
+      - --model
+      - ${RAG_GENERATION_MODEL:-Qwen/Qwen3.5-0.8B}
+      - --trust-remote-code
+      - --language-model-only
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
   app:
     build: .
     environment:
@@ -17,6 +40,9 @@ services:
       RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-Octen/Octen-Embedding-0.6B}
       RAG_RERANKER_MODEL: ${RAG_RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
       RAG_GENERATION_MODEL: ${RAG_GENERATION_MODEL:-}
+      RAG_VLLM_BASE_URL: ${RAG_VLLM_BASE_URL:-http://vllm:8000/v1}
+      RAG_VLLM_API_KEY: ${RAG_VLLM_API_KEY:-}
+      RAG_VLLM_TIMEOUT: ${RAG_VLLM_TIMEOUT:-120}
       RAG_ENABLE_RERANKER: ${RAG_ENABLE_RERANKER:-true}
       RAG_TRUST_REMOTE_CODE: ${RAG_TRUST_REMOTE_CODE:-true}
     volumes:
@@ -28,4 +54,3 @@ services:
 volumes:
   qdrant-data:
   hf-cache:
-

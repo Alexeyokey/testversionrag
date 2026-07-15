@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from typing import Any
+
+import requests
 
 SYSTEM_PROMPT = """Ты полезный многоязычный ассистент. Отвечай только на основании предоставленного контекста.
 Если ответа нет в контексте, ответь: «Ответ отсутствует в предоставленных документах».
@@ -20,68 +21,56 @@ HUMAN_TEMPLATE = """Контекст:
 
 
 class TextGenerator:
+    """Generate answers through a vLLM OpenAI-compatible server."""
+
     def __init__(
         self,
         model_name: str,
         max_new_tokens: int = 256,
         trust_remote_code: bool = True,
+        base_url: str = "http://localhost:8000/v1",
+        api_key: str | None = None,
+        timeout: float = 120.0,
     ) -> None:
+        # trust_remote_code remains in the signature for backwards compatibility.
+        # Model-loading options now belong to the vLLM server process.
+        del trust_remote_code
+        self.model_name = model_name
         self.max_new_tokens = max_new_tokens
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            trust_remote_code=trust_remote_code,
-        )
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-
-        model_kwargs = {
-            "trust_remote_code": trust_remote_code,
-            "dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
-        }
-        if torch.cuda.is_available():
-            model_kwargs["device_map"] = "auto"
-
-        try:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                **model_kwargs,
-            )
-        except ImportError as error:
-            if "gptqmodel" in str(error).lower():
-                raise RuntimeError(
-                    "Выбрана AWQ-модель, для которой нужен gptqmodel. "
-                    "На Windows используйте неквантованную модель, например "
-                    "RAG_GENERATION_MODEL=Qwen/Qwen3.5-0.8B."
-                ) from error
-            raise
-
-        self.model.eval()
+        self.endpoint = f"{base_url.rstrip('/')}/chat/completions"
+        self.api_key = api_key
+        self.timeout = timeout
 
     def answer(self, question: str, context: str) -> str:
         human_content = HUMAN_TEMPLATE.format(context=context, question=question)
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": human_content},
-        ]
+        payload: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": human_content},
+            ],
+            "max_tokens": self.max_new_tokens,
+            "temperature": 0,
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
 
-        inputs = self.tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
-        )
-        inputs = inputs.to(self.model.device)
-        input_length = inputs["input_ids"].shape[-1]
-        with torch.inference_mode():
-            output_ids = self.model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                do_sample=False,
-                pad_token_id=self.tokenizer.pad_token_id,
+        try:
+            response = requests.post(
+                self.endpoint,
+                json=payload,
+                headers=headers,
+                timeout=self.timeout,
             )
-        generated_ids = output_ids[0][input_length:]
-        return self.tokenizer.decode(
-            generated_ids,
-            skip_special_tokens=True,
-        ).strip()
+            response.raise_for_status()
+            body = response.json()
+            content = body["choices"][0]["message"]["content"]
+        except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as error:
+            raise RuntimeError(
+                f"Не удалось получить ответ от vLLM по адресу {self.endpoint}: {error}"
+            ) from error
+
+        if not isinstance(content, str):
+            raise RuntimeError("vLLM вернул ответ в неожиданном формате")
+        return content.strip()
