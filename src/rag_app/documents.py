@@ -21,6 +21,7 @@ class DocumentProcessor:
     supported_extensions = {".docx", ".txt", ".md", ".rst", ".pdf", ".xls", ".xlsx"}
 
     def __init__(self, chunk_size: int = 512, chunk_overlap: int = 50) -> None:
+        self.chunk_size = chunk_size
         self.splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
@@ -110,19 +111,118 @@ class DocumentProcessor:
         text = "\n".join(paragraph.text for paragraph in document.paragraphs if paragraph.text)
         return [Document(page_content=text, metadata={"source": source})]
 
-    @staticmethod
-    def _load_excel(path: Path, source: str) -> list[Document]:
+    def _load_excel(self, path: Path, source: str) -> list[Document]:
         workbook = pd.ExcelFile(path)
         documents: list[Document] = []
         for sheet_name in workbook.sheet_names:
-            frame = pd.read_excel(workbook, sheet_name=sheet_name).fillna("")
-            documents.append(
-                Document(
-                    page_content=frame.to_csv(index=False),
-                    metadata={"source": source, "sheet": sheet_name},
+            raw_frame = pd.read_excel(workbook, sheet_name=sheet_name, header=None)
+            raw_frame = raw_frame.dropna(axis="columns", how="all")
+            if raw_frame.empty:
+                continue
+
+            header_index = self._detect_excel_header(raw_frame)
+            headers = self._unique_headers(raw_frame.iloc[header_index].tolist())
+            data_frame = raw_frame.iloc[header_index + 1 :].copy()
+            data_frame.columns = headers
+            data_frame = data_frame.dropna(axis="rows", how="all")
+
+            header_line = "Колонки: " + " | ".join(headers)
+            current_lines = [header_line]
+            first_row_number: int | None = None
+            last_row_number: int | None = None
+
+            for row_index, row in data_frame.iterrows():
+                fields = [
+                    f"{column}: {self._format_cell(value)}"
+                    for column, value in row.items()
+                    if not pd.isna(value) and str(value).strip()
+                ]
+                if not fields:
+                    continue
+                row_number = int(row_index) + 1
+                row_line = "; ".join(fields)
+                candidate = "\n".join([*current_lines, row_line])
+                if len(candidate) > self.chunk_size and len(current_lines) > 1:
+                    documents.append(
+                        self._excel_document(
+                            source,
+                            sheet_name,
+                            current_lines,
+                            first_row_number,
+                            last_row_number,
+                        )
+                    )
+                    current_lines = [header_line]
+                    first_row_number = None
+
+                current_lines.append(row_line)
+                first_row_number = first_row_number or row_number
+                last_row_number = row_number
+
+            if len(current_lines) > 1:
+                documents.append(
+                    self._excel_document(
+                        source,
+                        sheet_name,
+                        current_lines,
+                        first_row_number,
+                        last_row_number,
+                    )
                 )
-            )
         return documents
+
+    @staticmethod
+    def _detect_excel_header(frame: pd.DataFrame) -> int:
+        sample = frame.head(25)
+        if sample.empty:
+            return 0
+        scored_rows: list[tuple[int, int, int]] = []
+        for index, row in sample.iterrows():
+            values = [str(value).strip() for value in row.tolist() if not pd.isna(value)]
+            unique_count = len(set(values))
+            scored_rows.append((unique_count, len(values), int(index)))
+        best_unique = max(item[0] for item in scored_rows)
+        best_non_empty = max(item[1] for item in scored_rows if item[0] == best_unique)
+        return next(
+            index
+            for unique_count, non_empty_count, index in scored_rows
+            if unique_count == best_unique and non_empty_count == best_non_empty
+        )
+
+    @staticmethod
+    def _unique_headers(values: list[object]) -> list[str]:
+        headers: list[str] = []
+        counts: dict[str, int] = {}
+        for index, value in enumerate(values, start=1):
+            base = str(value).strip() if not pd.isna(value) else f"column_{index}"
+            count = counts.get(base, 0) + 1
+            counts[base] = count
+            headers.append(base if count == 1 else f"{base}_{count}")
+        return headers
+
+    @staticmethod
+    def _format_cell(value: object) -> str:
+        if isinstance(value, pd.Timestamp):
+            return value.isoformat(sep=" ")
+        return str(value)
+
+    @staticmethod
+    def _excel_document(
+        source: str,
+        sheet_name: str,
+        lines: list[str],
+        first_row: int | None,
+        last_row: int | None,
+    ) -> Document:
+        return Document(
+            page_content="\n".join(lines),
+            metadata={
+                "source": source,
+                "sheet": sheet_name,
+                "first_row": first_row,
+                "last_row": last_row,
+            },
+        )
 
     def _load_url(self, url: str) -> list[Document]:
         response = requests.get(url, timeout=60)

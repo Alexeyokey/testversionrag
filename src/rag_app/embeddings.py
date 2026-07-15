@@ -43,7 +43,7 @@ class EmbeddingModel:
         self.model = AutoModel.from_pretrained(
             model_name,
             trust_remote_code=trust_remote_code,
-            torch_dtype=dtype,
+            dtype=dtype,
         ).to(self.device)
         self.model.eval()
 
