@@ -53,7 +53,6 @@ class TextGenerator:
             answer_language=answer_language,
             chat_history=chat_history,
         )
-        human_content = HUMAN_TEMPLATE.format(context=context, question=question)
         payload: dict[str, Any] = {
             "model": self.model_name,
             "messages": [
