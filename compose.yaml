@@ -9,12 +9,14 @@ services:
     restart: unless-stopped
 
   vllm:
-    image: vllm/vllm-openai:latest
+    image: vllm/vllm-openai:v0.16.0
     command:
-      - --model
-      - ${RAG_GENERATION_MODEL:-Qwen/Qwen3.5-0.8B}
+      - ${RAG_GENERATION_MODEL:-QuantTrio/Qwen3.5-9B-AWQ}
       - --trust-remote-code
-      - --language-model-only
+      - --max-model-len
+      - ${RAG_VLLM_MAX_MODEL_LEN:-8192}
+      - --gpu-memory-utilization
+      - ${RAG_VLLM_GPU_MEMORY_UTILIZATION:-0.6}
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
     ports:
@@ -39,7 +41,7 @@ services:
       RAG_COLLECTION: ${RAG_COLLECTION:-documents}
       RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-Octen/Octen-Embedding-0.6B}
       RAG_RERANKER_MODEL: ${RAG_RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
-      RAG_GENERATION_MODEL: ${RAG_GENERATION_MODEL:-}
+      RAG_GENERATION_MODEL: ${RAG_GENERATION_MODEL:-QuantTrio/Qwen3.5-9B-AWQ}
       RAG_VLLM_BASE_URL: ${RAG_VLLM_BASE_URL:-http://vllm:8000/v1}
       RAG_VLLM_API_KEY: ${RAG_VLLM_API_KEY:-}
       RAG_VLLM_TIMEOUT: ${RAG_VLLM_TIMEOUT:-120}

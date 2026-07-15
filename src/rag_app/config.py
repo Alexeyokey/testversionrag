@@ -18,7 +18,7 @@ class Settings:
     collection_name: str = "documents"
     embedding_model: str = "Octen/Octen-Embedding-0.6B"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
-    generation_model: str | None = None
+    generation_model: str | None = "QuantTrio/Qwen3.5-9B-AWQ"
     vllm_base_url: str = "http://localhost:8000/v1"
     vllm_api_key: str | None = None
     vllm_timeout: float = 120.0
@@ -43,7 +43,7 @@ class Settings:
             collection_name=os.getenv("RAG_COLLECTION", defaults.collection_name),
             embedding_model=os.getenv("RAG_EMBEDDING_MODEL", defaults.embedding_model),
             reranker_model=os.getenv("RAG_RERANKER_MODEL", defaults.reranker_model),
-            generation_model=os.getenv("RAG_GENERATION_MODEL") or None,
+            generation_model=os.getenv("RAG_GENERATION_MODEL") or defaults.generation_model,
             vllm_base_url=os.getenv("RAG_VLLM_BASE_URL", defaults.vllm_base_url),
             vllm_api_key=os.getenv("RAG_VLLM_API_KEY") or None,
             vllm_timeout=float(os.getenv("RAG_VLLM_TIMEOUT", defaults.vllm_timeout)),

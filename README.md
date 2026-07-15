@@ -53,10 +53,12 @@ docker compose run --rm app ask "Когда заключён договор?"
 локальный или удалённый vLLM, не запускайте сервис `vllm` и задайте адрес API:
 
 ```dotenv
-RAG_GENERATION_MODEL=Qwen/Qwen3.5-0.8B
+RAG_GENERATION_MODEL=QuantTrio/Qwen3.5-9B-AWQ
 RAG_VLLM_BASE_URL=http://localhost:8000/v1
 RAG_VLLM_API_KEY=
 RAG_VLLM_TIMEOUT=120
+RAG_VLLM_MAX_MODEL_LEN=8192
+RAG_VLLM_GPU_MEMORY_UTILIZATION=0.6
 ```
 
 Имя в `RAG_GENERATION_MODEL` должно совпадать с именем модели, опубликованным сервером.
@@ -87,6 +89,9 @@ rag ask "Когда заключён договор?"
 по-прежнему выполняются в приложении локально. Переранжирование можно отключить через
 `RAG_ENABLE_RERANKER=false`.
 
+Compose использует закреплённый образ `vllm/vllm-openai:v0.16.0`, необходимый для
+`QuantTrio/Qwen3.5-9B-AWQ`. Модель передаётся `vllm serve` позиционным аргументом.
+
 ## Конфигурация
 
 Основные параметры находятся в `.env.example`:
@@ -95,6 +100,8 @@ rag ask "Когда заключён договор?"
 - `RAG_EMBEDDING_MODEL`, `RAG_RERANKER_MODEL` — модели retrieval-пайплайна;
 - `RAG_GENERATION_MODEL` — имя модели, которую обслуживает vLLM;
 - `RAG_VLLM_BASE_URL`, `RAG_VLLM_API_KEY`, `RAG_VLLM_TIMEOUT` — подключение к vLLM;
+- `RAG_VLLM_MAX_MODEL_LEN` — размер контекста vLLM (по умолчанию 8192 токена);
+- `RAG_VLLM_GPU_MEMORY_UTILIZATION` — доля памяти GPU для vLLM (по умолчанию 0.6);
 - `RAG_MAX_NEW_TOKENS` — предел длины ответа;
 - `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP` — разбиение документов;
 - `RAG_TOP_K`, `RAG_CANDIDATE_K` — количество результатов;
