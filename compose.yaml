@@ -9,10 +9,9 @@ services:
     restart: unless-stopped
 
   vllm:
-    image: vllm/vllm-openai:v0.16.0
+    image: vllm/vllm-openai:v0.17.1
     command:
       - ${RAG_GENERATION_MODEL:-QuantTrio/Qwen3.5-9B-AWQ}
-      - --trust-remote-code
       - --max-model-len
       - ${RAG_VLLM_MAX_MODEL_LEN:-8192}
       - --gpu-memory-utilization
