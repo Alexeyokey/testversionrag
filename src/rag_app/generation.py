@@ -6,8 +6,6 @@ import requests
 
 SYSTEM_PROMPT = """Ты полезный многоязычный ассистент. Отвечай только на основании предоставленного контекста.
 Если ответа нет в контексте, ответь: «Ответ отсутствует в предоставленных документах».
-Для табличных данных различай уровень агрегации: итог периода и значение отдельной строки —
-не одно и то же. Если вопрос допускает несколько уровней, кратко укажи оба значения и их смысл.
 Отвечай на языке вопроса. Не показывай ход рассуждений. При ссылке на фрагмент указывай
 его номер в формате [1], [2]. Давай краткий, законченный ответ."""
 
@@ -48,13 +46,14 @@ class TextGenerator:
         self.api_key = api_key
         self.timeout = timeout
 
-    def answer(self, question: str, context: str) -> str:
+    def answer(self, question: str, context: str, chat_history: str = "Предыдущий разговор отсутствует.", answer_language="Русский") -> str:
         human_content = HUMAN_TEMPLATE.format(
-            chat_history="История диалога отсутствует.",
             context=context,
-            answer_language="Язык вопроса.",
             question=question,
+            answer_language=answer_language,
+            chat_history=chat_history,
         )
+        human_content = HUMAN_TEMPLATE.format(context=context, question=question)
         payload: dict[str, Any] = {
             "model": self.model_name,
             "messages": [
