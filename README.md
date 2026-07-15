@@ -58,6 +58,8 @@ RAG_VLLM_BASE_URL=http://localhost:8000/v1
 RAG_VLLM_API_KEY=
 RAG_VLLM_TIMEOUT=120
 RAG_VLLM_MAX_MODEL_LEN=8192
+RAG_VLLM_MAX_NUM_SEQS=8
+RAG_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE=8
 RAG_VLLM_GPU_MEMORY_UTILIZATION=0.6
 ```
 
@@ -91,6 +93,9 @@ rag ask "Когда заключён договор?"
 
 Compose использует закреплённый образ `vllm/vllm-openai:v0.17.1`, поддерживающий
 `QuantTrio/Qwen3.5-9B-AWQ`. Модель передаётся `vllm serve` позиционным аргументом.
+Так как приложение отправляет только текст, `--language-model-only` отключает загрузку
+визуального encoder и освобождает память под cache. Размер CUDA Graph ограничен восемью
+последовательностями для устойчивого запуска при `gpu-memory-utilization=0.6`.
 
 ## Конфигурация
 
@@ -101,6 +106,8 @@ Compose использует закреплённый образ `vllm/vllm-open
 - `RAG_GENERATION_MODEL` — имя модели, которую обслуживает vLLM;
 - `RAG_VLLM_BASE_URL`, `RAG_VLLM_API_KEY`, `RAG_VLLM_TIMEOUT` — подключение к vLLM;
 - `RAG_VLLM_MAX_MODEL_LEN` — размер контекста vLLM (по умолчанию 8192 токена);
+- `RAG_VLLM_MAX_NUM_SEQS` — максимум одновременно обрабатываемых последовательностей;
+- `RAG_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE` — максимальный batch для CUDA Graph capture;
 - `RAG_VLLM_GPU_MEMORY_UTILIZATION` — доля памяти GPU для vLLM (по умолчанию 0.6);
 - `RAG_MAX_NEW_TOKENS` — предел длины ответа;
 - `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP` — разбиение документов;

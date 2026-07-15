@@ -12,8 +12,13 @@ services:
     image: vllm/vllm-openai:v0.17.1
     command:
       - ${RAG_GENERATION_MODEL:-QuantTrio/Qwen3.5-9B-AWQ}
+      - --language-model-only
       - --max-model-len
       - ${RAG_VLLM_MAX_MODEL_LEN:-8192}
+      - --max-num-seqs
+      - ${RAG_VLLM_MAX_NUM_SEQS:-8}
+      - --max-cudagraph-capture-size
+      - ${RAG_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE:-8}
       - --gpu-memory-utilization
       - ${RAG_VLLM_GPU_MEMORY_UTILIZATION:-0.6}
     environment:
