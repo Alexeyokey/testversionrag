@@ -65,10 +65,8 @@ class TextGenerator:
             ],
             "max_tokens": self.max_new_tokens,
             "chat_template_kwargs": {
-        "enable_thinking": self.thinking,
-            },
-            "temperature": self.temperature,
-        }
+        "enable_thinking": self.thinking},
+            "temperature": self.temperature}
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
