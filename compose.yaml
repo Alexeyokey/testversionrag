@@ -23,6 +23,8 @@ services:
       - ${RAG_VLLM_GPU_MEMORY_UTILIZATION:-0.6}
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_OFFLINE: ${RAG_HF_OFFLINE:-0}
+      TRANSFORMERS_OFFLINE: ${RAG_HF_OFFLINE:-0}
     ports:
       - "8000:8000"
     volumes:
