@@ -45,7 +45,7 @@ class TextGenerator:
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
         self.endpoint = f"{base_url.rstrip('/')}/chat/completions"
-        self.temperature = temperature,
+        self.temperature = temperature
         self.thinking = thinking
         self.api_key = api_key
         self.timeout = timeout
