@@ -5,6 +5,7 @@ beautifulsoup4>=4.12
 docling>=2.113.0
 langchain-community>=0.3
 langchain-core>=0.3
+docling-slim[format-opendocument]>=2.113.0
 langchain-text-splitters>=0.3
 openpyxl>=3.1
 pandas>=2.2

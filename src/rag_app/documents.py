@@ -17,7 +17,7 @@ from docling_core.transforms.chunker.tokenizer.huggingface import (
 from docling_core.transforms.serializer.base import BaseDocSerializer
 from docling_core.transforms.serializer.markdown import MarkdownTableSerializer
 from docling_core.types import DoclingDocument as DoclingCoreDocument
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_community.document_loaders import TextLoader
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
@@ -25,6 +25,8 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from .config import Settings
 
 
+# RecursiveCharacterTextSplitter пробует разделители по порядку; пустая строка
+# в конце гарантирует жёсткое деление по символам для очень длинного фрагмента.
 _MULTILINGUAL_SEPARATORS = [
     "\n\n",
     "\n",
@@ -40,9 +42,15 @@ _MULTILINGUAL_SEPARATORS = [
     "",
 ]
 
+# Форматы разделены по двум конвейерам, чтобы список каталога и load_file()
+# не расходились при добавлении нового типа документа.
+_DOCLING_EXTENSIONS = frozenset({".pdf", ".xlsx", ".odt", ".docx"})
+_TEXT_EXTENSIONS = frozenset({".txt", ".md", ".rst"})
+_SUPPORTED_EXTENSIONS = _DOCLING_EXTENSIONS | _TEXT_EXTENSIONS
+
 
 class MarkdownTableSerializerProvider(ChunkingSerializerProvider):
-    """Serialize tables as Markdown so they can be split by complete rows."""
+    """Сериализовать таблицы в Markdown для сохранения строк и заголовков."""
 
     def get_serializer(self, doc: DoclingCoreDocument) -> BaseDocSerializer:
         """Создать Markdown-сериализатор таблиц для документа Docling."""
@@ -56,10 +64,10 @@ class DocumentProcessor:
     """
     Загружает документы и преобразует их в LangChain Document.
 
-    TXT/Markdown/PDF:
+    TXT/Markdown/RST:
         LangChain loader -> RecursiveCharacterTextSplitter
 
-    XLSX/ODT/DOCX:
+    PDF/XLSX/ODT/DOCX:
         Docling -> HybridChunker -> LangChain Document
     """
 
@@ -91,6 +99,8 @@ class DocumentProcessor:
         if docling_chunk_tokens <= 0:
             raise ValueError("docling_chunk_tokens должен быть больше нуля")
 
+        # Для простого текста размер и overlap измеряются в символах. Docling-файлы
+        # ниже делятся отдельно по токенам embedding-модели через HybridChunker.
         self._splitter = RecursiveCharacterTextSplitter(
             chunk_size=resolved_chunk_size,
             chunk_overlap=resolved_chunk_overlap,
@@ -101,6 +111,8 @@ class DocumentProcessor:
 
         self.docling_chunk_tokens = docling_chunk_tokens
         self.embedding_model = embedding_model or runtime_settings.embedding_model
+        # RagService передаёт сюда уже загруженный токенизатор embedding-модели,
+        # чтобы чанкование и последующее построение векторов считали токены одинаково.
         self._hf_tokenizer = tokenizer
         self.trust_remote_code = (
             runtime_settings.trust_remote_code
@@ -108,8 +120,8 @@ class DocumentProcessor:
             else trust_remote_code
         )
 
-        # Создаются лениво: при обработке только TXT/PDF
-        # Docling и HF-токенизатор загружаться не будут.
+        # Тяжёлые компоненты создаются только при первом Docling-файле. При работе
+        # исключительно с TXT/Markdown/RST модельный токенизатор здесь не загружается.
         self._docling_converter: DocumentConverter | None = None
         self._docling_chunker: HybridChunker | None = None
 
@@ -124,58 +136,54 @@ class DocumentProcessor:
 
     def load_file(self, path: str | Path) -> list[Document]:
         """Преобразовать один поддерживаемый файл в индексируемые чанки."""
-        path = Path(path)
+        path = Path(path).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"Файл не найден: {path}")
         suffix = path.suffix.lower()
 
-        if suffix in {".xlsx", ".odt", ".docx"}:
+        # Структурированные документы сначала переводятся в единый DoclingDocument.
+        if suffix in _DOCLING_EXTENSIONS:
             return self._load_docling(path)
 
-        if suffix in {".txt", ".md", ".rst"}:
+        if suffix in _TEXT_EXTENSIONS:
             loader = TextLoader(
                 str(path),
                 encoding="utf-8",
                 autodetect_encoding=True,
             )
-        elif suffix == ".pdf":
-            loader = PyPDFLoader(str(path))
         else:
             raise ValueError(
                 f"Неподдерживаемый тип файла: {suffix!r}. "
                 "Поддерживаемые форматы: "
                 ".txt .md .rst .pdf .docx .xlsx .odt"
             )
-
         raw_documents = loader.load()
-
         for document in raw_documents:
+            # Метаданные копируются в каждый чанк функцией split_documents().
             document.metadata["source"] = path.name
-
         documents = self._splitter.split_documents(raw_documents)
         return self._add_document_ids(documents, path)
 
     def _load_docling(self, path: Path) -> list[Document]:
         """Преобразовать структурированный документ через Docling и HybridChunker."""
         converter, chunker = self._get_docling_components()
-
         conversion = converter.convert(source=path)
         docling_document = conversion.document
-
         documents: list[Document] = []
-        seen_content: set[str] = set()
 
         for chunk in chunker.chunk(dl_doc=docling_document):
+            # contextualize() добавляет к содержимому структурный контекст Docling:
+            # заголовки разделов, подписи и повторённый заголовок таблицы.
             content = chunker.contextualize(chunk=chunk).strip()
-
             if not content:
                 continue
 
-            content_key = " ".join(content.split()).casefold()
-            if content_key in seen_content:
-                continue
-            seen_content.add(content_key)
-
+            # Одинаковые тексты намеренно не удаляются: повторяющиеся строки таблицы
+            # могут описывать разные реальные операции и должны участвовать в расчётах.
             chunk_index = len(documents) + 1
 
+            # Сохраняем исходные метаданные Docling (страницы, заголовки, provenance)
+            # и дополняем их единообразными полями, используемыми остальным RAG.
             metadata = chunk.meta.export_json_dict()
             metadata.update(
                 {
@@ -184,14 +192,12 @@ class DocumentProcessor:
                     "document_type": path.suffix.lower().lstrip("."),
                 }
             )
-
             documents.append(
                 Document(
                     page_content=content,
                     metadata=metadata,
                 )
             )
-
         return self._add_document_ids(documents, path)
 
     @staticmethod
@@ -200,10 +206,16 @@ class DocumentProcessor:
         path: Path,
     ) -> list[Document]:
         """Добавить стабильные идентификаторы источника и каждого чанка."""
+        # Абсолютный путь отличает одноимённые файлы из разных каталогов и служит
+        # ключом для удаления старых чанков этого источника перед переиндексацией.
         source_identity = str(path.resolve())
         for chunk_index, document in enumerate(documents, start=1):
             document.metadata.setdefault("source", path.name)
             document.metadata["source_id"] = source_identity
+            document.metadata.setdefault(
+                "document_type",
+                path.suffix.lower().lstrip("."),
+            )
             document.metadata.setdefault("chunk_index", chunk_index)
             identity = f"{source_identity}|{document.metadata['chunk_index']}"
             document.metadata["doc_id"] = str(uuid5(NAMESPACE_URL, identity))
@@ -214,13 +226,18 @@ class DocumentProcessor:
     ) -> tuple[DocumentConverter, HybridChunker]:
         """Лениво создать конвертер Docling и совместимый с эмбеддингами чункер."""
         if self._docling_converter is None:
+            # Явный allow-list не даёт случайно отправить в Docling неподдерживаемый
+            # текущим маршрутизатором формат.
             self._docling_converter = DocumentConverter(
                 allowed_formats=[
+                    InputFormat.PDF,
                     InputFormat.XLSX,
                     InputFormat.ODT,
                     InputFormat.DOCX,
                 ],
                 format_options={
+                    # Диаграммы часто повторяют значения исходных ячеек; их разбор
+                    # отключён, чтобы не индексировать одни финансовые данные дважды.
                     InputFormat.XLSX: ExcelFormatOption(
                         backend_options=MsExcelBackendOptions(
                             parse_charts=False,
@@ -232,6 +249,8 @@ class DocumentProcessor:
         if self._docling_chunker is None:
             hf_tokenizer = self._hf_tokenizer
             if hf_tokenizer is None:
+                # Fallback нужен при автономном использовании DocumentProcessor;
+                # в RagService сюда обычно передаётся готовый токенизатор.
                 hf_tokenizer = AutoTokenizer.from_pretrained(
                     self.embedding_model,
                     trust_remote_code=self.trust_remote_code,
@@ -244,6 +263,8 @@ class DocumentProcessor:
 
             self._docling_chunker = HybridChunker(
                 tokenizer=docling_tokenizer,
+                # Таблицы сериализуются в Markdown, небольшие соседние элементы
+                # объединяются, а заголовок повторяется в каждой части большой таблицы.
                 serializer_provider=MarkdownTableSerializerProvider(),
                 merge_peers=True,
                 repeat_table_header=True,
@@ -253,24 +274,17 @@ class DocumentProcessor:
 
     def load_directory(self, directory: str | Path) -> list[Document]:
         """Рекурсивно загрузить поддерживаемые документы из каталога."""
-        directory = Path(directory)
+        directory = Path(directory).expanduser()
+        if not directory.is_dir():
+            raise NotADirectoryError(f"Каталог не найден: {directory}")
         all_chunks: list[Document] = []
 
-        supported = {
-            ".txt",
-            ".md",
-            ".rst",
-            ".docx",
-            ".pdf",
-            ".xlsx",
-            ".odt",
-        }
-
+        # Сортировка делает порядок чанков и диагностические сообщения воспроизводимыми.
         for file_path in sorted(directory.rglob("*")):
             if not file_path.is_file():
                 continue
 
-            if file_path.suffix.lower() not in supported:
+            if file_path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
                 continue
 
             print(f"[Processor] Загрузка {file_path.name} ...")
@@ -278,6 +292,8 @@ class DocumentProcessor:
             try:
                 all_chunks.extend(self.load_file(file_path))
             except Exception as error:
+                # Best-effort режим: повреждённый файл не блокирует остальные.
+                # Сообщение важно проверять — возвращаемый индекс может быть частичным.
                 print(
                     f"[Processor] Пропущено "
                     f"{file_path.name}: {error}"
