@@ -19,6 +19,18 @@ class VectorStore:
         if exists and recreate:
             self.client.delete_collection(self.collection_name)
             exists = False
+        if exists:
+            collection = self.client.get_collection(self.collection_name)
+            vectors_config = collection.config.params.vectors
+            if (
+                isinstance(vectors_config, models.VectorParams)
+                and vectors_config.size != vector_size
+            ):
+                raise ValueError(
+                    "Размер векторов существующей коллекции "
+                    f"({vectors_config.size}) не совпадает с моделью "
+                    f"({vector_size}). Повторите index с --recreate."
+                )
         if not exists:
             self.client.create_collection(
                 collection_name=self.collection_name,
@@ -31,6 +43,16 @@ class VectorStore:
     def upsert(self, documents: list[Document], vectors: list[list[float]]) -> None:
         if len(documents) != len(vectors):
             raise ValueError("Количество документов и векторов не совпадает")
+        missing_ids = [
+            index
+            for index, document in enumerate(documents)
+            if not document.metadata.get("doc_id")
+        ]
+        if missing_ids:
+            raise ValueError(
+                "У документов отсутствует metadata['doc_id']: "
+                + ", ".join(map(str, missing_ids))
+            )
         points = [
             models.PointStruct(
                 id=document.metadata["doc_id"],
@@ -45,6 +67,26 @@ class VectorStore:
                 points=points[start : start + 128],
                 wait=True,
             )
+
+    def delete_sources(self, source_ids: set[str]) -> None:
+        """Удалить старые чанки переиндексируемых источников."""
+        if not source_ids or not self.client.collection_exists(self.collection_name):
+            return
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    should=[
+                        models.FieldCondition(
+                            key="source_id",
+                            match=models.MatchValue(value=source_id),
+                        )
+                        for source_id in sorted(source_ids)
+                    ]
+                )
+            ),
+            wait=True,
+        )
 
     def search(self, query_vector: list[float], limit: int) -> list[Document]:
         response = self.client.query_points(

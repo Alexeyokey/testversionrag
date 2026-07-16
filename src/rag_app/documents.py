@@ -20,7 +20,7 @@ from docling_core.types import DoclingDocument as DoclingCoreDocument
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from .config import Settings
 
@@ -45,6 +45,7 @@ class MarkdownTableSerializerProvider(ChunkingSerializerProvider):
     """Serialize tables as Markdown so they can be split by complete rows."""
 
     def get_serializer(self, doc: DoclingCoreDocument) -> BaseDocSerializer:
+        """Создать Markdown-сериализатор таблиц для документа Docling."""
         return ChunkingDocSerializer(
             doc=doc,
             table_serializer=MarkdownTableSerializer(),
@@ -55,7 +56,7 @@ def normalize_repeated_table_cells(
     document: DoclingCoreDocument,
     minimum_repetitions: int = 3,
 ) -> int:
-    """Blank copied merged-like cells without changing the source workbook."""
+    """Убрать копии объединённых ячеек, не изменяя исходный XLSX."""
     normalized_cells = 0
 
     for table in document.tables:
@@ -93,7 +94,7 @@ class DocumentProcessor:
     TXT/Markdown/PDF:
         LangChain loader -> RecursiveCharacterTextSplitter
 
-    XLSX:
+    XLSX/ODT/DOCX:
         Docling -> HybridChunker -> LangChain Document
     """
 
@@ -104,11 +105,30 @@ class DocumentProcessor:
         docling_chunk_tokens: int = 512,
         embedding_model: str | None = None,
         trust_remote_code: bool | None = None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
     ) -> None:
+        """Настроить обычный и токен-ориентированный разделители текста."""
         runtime_settings = Settings.from_env()
+        resolved_chunk_size = (
+            runtime_settings.chunk_size if chunk_size is None else chunk_size
+        )
+        resolved_chunk_overlap = (
+            runtime_settings.chunk_overlap
+            if chunk_overlap is None
+            else chunk_overlap
+        )
+        if resolved_chunk_size <= 0:
+            raise ValueError("chunk_size должен быть больше нуля")
+        if resolved_chunk_overlap < 0:
+            raise ValueError("chunk_overlap не может быть отрицательным")
+        if resolved_chunk_overlap >= resolved_chunk_size:
+            raise ValueError("chunk_overlap должен быть меньше chunk_size")
+        if docling_chunk_tokens <= 0:
+            raise ValueError("docling_chunk_tokens должен быть больше нуля")
+
         self._splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size or runtime_settings.chunk_size,
-            chunk_overlap=chunk_overlap or runtime_settings.chunk_overlap,
+            chunk_size=resolved_chunk_size,
+            chunk_overlap=resolved_chunk_overlap,
             separators=_MULTILINGUAL_SEPARATORS,
             length_function=len,
             is_separator_regex=False,
@@ -116,6 +136,7 @@ class DocumentProcessor:
 
         self.docling_chunk_tokens = docling_chunk_tokens
         self.embedding_model = embedding_model or runtime_settings.embedding_model
+        self._hf_tokenizer = tokenizer
         self.trust_remote_code = (
             runtime_settings.trust_remote_code
             if trust_remote_code is None
@@ -128,7 +149,7 @@ class DocumentProcessor:
         self._docling_chunker: HybridChunker | None = None
 
     def load(self, source: str | Path) -> list[Document]:
-        """Load a file or all supported files from a directory."""
+        """Загрузить один файл или все поддерживаемые файлы каталога."""
         path = Path(source).expanduser()
         if path.is_file():
             return self.load_file(path)
@@ -137,6 +158,7 @@ class DocumentProcessor:
         raise FileNotFoundError(f"Файл или папка не найдены: {source}")
 
     def load_file(self, path: str | Path) -> list[Document]:
+        """Преобразовать один поддерживаемый файл в индексируемые чанки."""
         path = Path(path)
         suffix = path.suffix.lower()
 
@@ -167,6 +189,7 @@ class DocumentProcessor:
         return self._add_document_ids(documents, path)
 
     def _load_docling(self, path: Path) -> list[Document]:
+        """Преобразовать структурированный документ через Docling и HybridChunker."""
         converter, chunker = self._get_docling_components()
 
         conversion = converter.convert(source=path)
@@ -213,23 +236,20 @@ class DocumentProcessor:
         documents: list[Document],
         path: Path,
     ) -> list[Document]:
+        """Добавить стабильные идентификаторы источника и каждого чанка."""
         source_identity = str(path.resolve())
         for chunk_index, document in enumerate(documents, start=1):
             document.metadata.setdefault("source", path.name)
+            document.metadata["source_id"] = source_identity
             document.metadata.setdefault("chunk_index", chunk_index)
-            identity = "|".join(
-                (
-                    source_identity,
-                    str(document.metadata["chunk_index"]),
-                    document.page_content,
-                )
-            )
+            identity = f"{source_identity}|{document.metadata['chunk_index']}"
             document.metadata["doc_id"] = str(uuid5(NAMESPACE_URL, identity))
         return documents
 
     def _get_docling_components(
         self,
     ) -> tuple[DocumentConverter, HybridChunker]:
+        """Лениво создать конвертер Docling и совместимый с эмбеддингами чункер."""
         if self._docling_converter is None:
             self._docling_converter = DocumentConverter(
                 allowed_formats=[
@@ -247,10 +267,12 @@ class DocumentProcessor:
             )
 
         if self._docling_chunker is None:
-            hf_tokenizer = AutoTokenizer.from_pretrained(
-                self.embedding_model,
-                trust_remote_code=self.trust_remote_code,
-            )
+            hf_tokenizer = self._hf_tokenizer
+            if hf_tokenizer is None:
+                hf_tokenizer = AutoTokenizer.from_pretrained(
+                    self.embedding_model,
+                    trust_remote_code=self.trust_remote_code,
+                )
 
             docling_tokenizer = HuggingFaceTokenizer(
                 tokenizer=hf_tokenizer,
@@ -267,6 +289,7 @@ class DocumentProcessor:
         return self._docling_converter, self._docling_chunker
 
     def load_directory(self, directory: str | Path) -> list[Document]:
+        """Рекурсивно загрузить поддерживаемые документы из каталога."""
         directory = Path(directory)
         all_chunks: list[Document] = []
 

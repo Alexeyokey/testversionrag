@@ -28,6 +28,7 @@ class Settings:
     enable_reranker: bool = True
     chunk_size: int = 512
     chunk_overlap: int = 50
+    docling_chunk_tokens: int = 512
     embedding_batch_size: int = 32
     top_k: int = 3
     candidate_k: int = 8
@@ -52,9 +53,15 @@ class Settings:
             trust_remote_code=_as_bool("RAG_TRUST_REMOTE_CODE", defaults.trust_remote_code),
             enable_reranker=_as_bool("RAG_ENABLE_RERANKER", defaults.enable_reranker),
             temperature=float(os.getenv("RAG_TEMPERATURE", defaults.temperature)),
-            thinking = _as_bool("RAG_THINKING", defaults.thinking),
+            thinking=_as_bool("RAG_THINKING", defaults.thinking),
             chunk_size=int(os.getenv("RAG_CHUNK_SIZE", defaults.chunk_size)),
             chunk_overlap=int(os.getenv("RAG_CHUNK_OVERLAP", defaults.chunk_overlap)),
+            docling_chunk_tokens=int(
+                os.getenv(
+                    "RAG_DOCLING_CHUNK_TOKENS",
+                    defaults.docling_chunk_tokens,
+                )
+            ),
             embedding_batch_size=int(
                 os.getenv("RAG_EMBEDDING_BATCH_SIZE", defaults.embedding_batch_size)
             ),
@@ -67,14 +74,22 @@ class Settings:
         )
 
     def validate(self) -> None:
+        if self.chunk_size <= 0:
+            raise ValueError("RAG_CHUNK_SIZE должен быть больше нуля")
+        if self.chunk_overlap < 0:
+            raise ValueError("RAG_CHUNK_OVERLAP не может быть отрицательным")
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("RAG_CHUNK_OVERLAP должен быть меньше RAG_CHUNK_SIZE")
+        if self.docling_chunk_tokens <= 0:
+            raise ValueError("RAG_DOCLING_CHUNK_TOKENS должен быть больше нуля")
         if self.top_k <= 0 or self.candidate_k < self.top_k:
             raise ValueError("RAG_CANDIDATE_K должен быть не меньше RAG_TOP_K > 0")
         if self.vector_weight < 0 or self.bm25_weight < 0:
             raise ValueError("Веса поиска не могут быть отрицательными")
         if self.vector_weight + self.bm25_weight == 0:
             raise ValueError("Хотя бы один вес поиска должен быть больше нуля")
+        if self.rank_constant < 0:
+            raise ValueError("RAG_RANK_CONSTANT не может быть отрицательным")
         if self.max_new_tokens <= 0:
             raise ValueError("RAG_MAX_NEW_TOKENS должен быть больше нуля")
         if self.vllm_timeout <= 0:

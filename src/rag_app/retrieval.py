@@ -13,7 +13,10 @@ def tokenize(text: str) -> list[str]:
 
 
 def document_key(document: Document) -> str:
-    return str(document.metadata["doc_id"])
+    doc_id = document.metadata.get("doc_id")
+    if not doc_id:
+        raise ValueError("У документа отсутствует обязательный metadata['doc_id']")
+    return str(doc_id)
 
 
 def format_documents(documents: list[Document]) -> str:
@@ -22,7 +25,18 @@ def format_documents(documents: list[Document]) -> str:
     parts = []
     for index, document in enumerate(documents, start=1):
         source = document.metadata.get("source", "unknown")
-        parts.append(f"[{index}] Источник: {source}\n{document.page_content}")
+        location = [f"Источник: {source}"]
+        if sheet := document.metadata.get("sheet"):
+            location.append(f"лист: {sheet}")
+        page = document.metadata.get("page")
+        if page is not None:
+            location.append(f"страница: {page}")
+        chunk_index = document.metadata.get("chunk_index")
+        if chunk_index is not None:
+            location.append(f"чанк: {chunk_index}")
+        parts.append(
+            f"[{index}] {'; '.join(location)}\n{document.page_content}"
+        )
     return "\n\n---\n\n".join(parts)
 
 
@@ -136,4 +150,3 @@ class HybridRetriever:
             )
             for key in ranked_keys
         ]
-

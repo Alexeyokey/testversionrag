@@ -2,22 +2,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from uuid import NAMESPACE_URL, uuid5
 
 import pytest
-from docling.chunking import HybridChunker
-from docling.datamodel.backend_options import MsExcelBackendOptions
-from docling.datamodel.base_models import InputFormat
-from docling.document_converter import DocumentConverter, ExcelFormatOption
-from docling_core.transforms.chunker.tokenizer.huggingface import (
-    HuggingFaceTokenizer,
-)
 from langchain_core.documents import Document
 
-from rag_app.documents import (
-    MarkdownTableSerializerProvider,
-    normalize_repeated_table_cells,
-)
+from rag_app.documents import DocumentProcessor
 from rag_app.embeddings import EmbeddingModel
 from rag_app.vector_store import VectorStore
 
@@ -63,69 +52,28 @@ def xlsx_documents(embedding_model: EmbeddingModel) -> list[Document]:
     if not paths:
         pytest.fail(f"В каталоге {directory} не найдены XLSX-файлы")
 
-    converter = DocumentConverter(
-        allowed_formats=[InputFormat.XLSX],
-        format_options={
-            InputFormat.XLSX: ExcelFormatOption(
-                backend_options=MsExcelBackendOptions(parse_charts=False)
-            )
-        },
-    )
-    docling_tokenizer = HuggingFaceTokenizer(
+    processor = DocumentProcessor(
+        chunk_overlap=0,
+        docling_chunk_tokens=int(os.getenv("RAG_TEST_CHUNK_TOKENS", "512")),
         tokenizer=embedding_model.tokenizer,
-        max_tokens=int(os.getenv("RAG_TEST_CHUNK_TOKENS", "512")),
-    )
-    chunker = HybridChunker(
-        tokenizer=docling_tokenizer,
-        serializer_provider=MarkdownTableSerializerProvider(),
-        merge_peers=True,
-        repeat_table_header=True,
+        trust_remote_code=True,
     )
     documents: list[Document] = []
-    seen_content: set[str] = set()
 
     print("\n" + "=" * 100)
     print("DOCLING CHUNKS")
     print("=" * 100)
 
     for path in paths:
-        converted = converter.convert(source=path).document
-        normalized_cells = normalize_repeated_table_cells(converted)
-        print(f"[Docling] Удалено повторяющихся ячеек: {normalized_cells}")
-
-        for chunk in chunker.chunk(dl_doc=converted):
-            raw_content = chunk.text.strip()
-            content = chunker.contextualize(chunk=chunk).strip()
-            if not content:
-                continue
-
-            content_key = " ".join(content.split()).casefold()
-            if content_key in seen_content:
-                continue
-            seen_content.add(content_key)
-
-            chunk_index = len(documents) + 1
-
+        file_documents = processor.load_file(path)
+        documents.extend(file_documents)
+        for document in file_documents:
+            chunk_index = document.metadata["chunk_index"]
             chunk_key = f"{path.name}:{chunk_index}"
-            metadata = chunk.meta.export_json_dict()
-            metadata.update(
-                {
-                    "doc_id": str(uuid5(NAMESPACE_URL, chunk_key)),
-                    "chunk_key": chunk_key,
-                    "source": path.name,
-                    "chunk_index": chunk_index,
-                    "document_type": "xlsx",
-                }
-            )
-            documents.append(Document(page_content=content, metadata=metadata))
-
             print(f"\n[{chunk_key}]")
             print("-" * 100)
-            print("RAW CHUNK:")
-            print(raw_content)
-            if content != raw_content:
-                print("\nCONTEXTUALIZED CHUNK:")
-                print(content)
+            print("INDEXED CHUNK:")
+            print(document.page_content)
 
     if not documents:
         pytest.fail(

@@ -12,7 +12,7 @@ rag_project/
 ├── src/rag_app/
 │   ├── cli.py           # команды index, search и ask
 │   ├── config.py        # конфигурация из переменных окружения
-│   ├── documents.py     # TXT/MD/RST/PDF/DOCX/XLS/XLSX/URL
+│   ├── documents.py     # TXT/MD/RST/PDF/DOCX/ODT/XLSX
 │   ├── embeddings.py    # Hugging Face embedding model
 │   ├── vector_store.py  # работа с Qdrant
 │   ├── retrieval.py     # BM25 и reciprocal-rank fusion
@@ -111,15 +111,17 @@ Compose использует закреплённый образ `vllm/vllm-open
 - `RAG_VLLM_GPU_MEMORY_UTILIZATION` — доля памяти GPU для vLLM (по умолчанию 0.6);
 - `RAG_MAX_NEW_TOKENS` — предел длины ответа;
 - `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP` — разбиение документов;
+- `RAG_DOCLING_CHUNK_TOKENS` — токеновый лимит чанков DOCX/ODT/XLSX;
 - `RAG_TOP_K`, `RAG_CANDIDATE_K` — количество результатов;
 - `RAG_VECTOR_WEIGHT`, `RAG_BM25_WEIGHT`, `RAG_RANK_CONSTANT` — объединение рангов.
 
 Размер вектора определяется по реально полученному эмбеддингу при создании коллекции.
 После смены embedding-модели заново выполните индексацию с `--recreate`.
 
-Excel-листы обрабатываются как таблицы: загрузчик определяет строку заголовков и повторяет
-названия колонок в каждом чанке. Это помогает сопоставлять запросы с конкретными строками,
-датами и значениями.
+DOCX, ODT и XLSX преобразуются через Docling и делятся `HybridChunker`. Таблицы XLSX
+сериализуются в Markdown с повторением заголовка при разделении, а данные встроенных
+диаграмм не индексируются повторно. Скопированные значения, имитирующие объединённые
+ячейки, сворачиваются только внутри представления Docling; исходный файл не изменяется.
 
 ## Проверки
 

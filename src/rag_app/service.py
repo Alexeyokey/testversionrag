@@ -31,19 +31,26 @@ class RagService:
         return self._embedding_model
 
     def index(self, source: str, recreate: bool = False) -> int:
+        embedding_model = self.embedding_model
         processor = DocumentProcessor(
             chunk_size=self.settings.chunk_size,
             chunk_overlap=self.settings.chunk_overlap,
+            docling_chunk_tokens=self.settings.docling_chunk_tokens,
             embedding_model=self.settings.embedding_model,
             trust_remote_code=self.settings.trust_remote_code,
+            tokenizer=embedding_model.tokenizer,
         )
         documents = processor.load(source)
         if not documents:
             raise ValueError("В источнике не найдено текста для индексации")
-        vectors = self.embedding_model.embed_documents(
+        vectors = embedding_model.embed_documents(
             [document.page_content for document in documents]
         )
         self._store.ensure_collection(len(vectors[0]), recreate=recreate)
+        if not recreate:
+            self._store.delete_sources(
+                {str(document.metadata["source_id"]) for document in documents}
+            )
         self._store.upsert(documents, vectors)
         return len(documents)
 

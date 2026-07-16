@@ -1,97 +1,116 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
-from openpyxl import Workbook
-
-from rag_app.documents import DocumentProcessor
-
-
-def _create_sales_workbook(path: Path) -> None:
-    workbook = Workbook()
-
-    dashboard = workbook.active
-    dashboard.title = "Dashboard"
-    dashboard["A1"] = "Коммерческий дашборд — 2026"
-    dashboard["A2"] = "Сводные показатели и помесячная выручка"
-    dashboard["A4"] = "Общая выручка"
-    dashboard["B4"] = 85_735_400
-    dashboard["A5"] = "Крупнейшая операция"
-    dashboard["B5"] = 3_391_500
-    dashboard["A7"] = "Месяц"
-    dashboard["B7"] = "Выручка"
-    dashboard.append(["Январь 2026", 12_336_000])
-    dashboard.append(["Март 2026", 17_925_500])
-    for row in (12, 13):
-        for column in range(1, 5):
-            dashboard.cell(row=row, column=column, value="Контрольный текст после таблицы")
-
-    summary = workbook.create_sheet("Monthly Summary")
-    summary.append(["Месяц", "Выручка", "Количество операций"])
-    summary.append(["Январь 2026", 12_336_000, 10])
-    summary.append(["Февраль 2026", 14_681_300, 10])
-    summary.append(["Март 2026", 17_925_500, 10])
-
-    reference = workbook.create_sheet("Reference")
-    reference.append(["Поле", "Описание"])
-    reference.append(["Маркер", "SALES-QUARTZ-3472"])
-    reference.append(["Уникальная максимальная выручка", "3 391 500 ₽"])
-
-    workbook.save(path)
+from rag_app.documents import (
+    DocumentProcessor,
+    normalize_repeated_table_cells,
+)
 
 
-def test_excel_preserves_independent_dashboard_blocks(tmp_path: Path) -> None:
-    path = tmp_path / "sales.xlsx"
-    _create_sales_workbook(path)
+@dataclass
+class _Cell:
+    text: str
+    start_row_offset_idx: int
+    start_col_offset_idx: int
 
-    documents = DocumentProcessor(chunk_size=300, chunk_overlap=0).load(str(path))
 
-    dashboard_summary = next(
-        document
-        for document in documents
-        if document.metadata["sheet"] == "Dashboard"
-        and document.metadata["block_type"] == "key_value"
-    )
-    assert "Общая выручка: 85735400" in dashboard_summary.page_content
-    assert "Крупнейшая операция: 3391500" in dashboard_summary.page_content
-    control_chunks = [
-        item for item in documents if "Контрольный текст после таблицы" in item.page_content
+class _Meta:
+    def export_json_dict(self) -> dict:
+        return {"headings": ["Тестовый лист"]}
+
+
+@dataclass
+class _Chunk:
+    text: str
+    meta: _Meta
+
+
+class _Converter:
+    def __init__(self, document) -> None:
+        self.document = document
+
+    def convert(self, source: Path):
+        return SimpleNamespace(document=self.document)
+
+
+class _Chunker:
+    def __init__(self, chunks: list[_Chunk]) -> None:
+        self.chunks = chunks
+
+    def chunk(self, dl_doc):
+        return iter(self.chunks)
+
+    def contextualize(self, chunk: _Chunk) -> str:
+        return chunk.text
+
+
+def test_normalize_repeated_table_cells_collapses_only_long_repeats() -> None:
+    cells = [
+        _Cell("Повтор", 0, 0),
+        _Cell("Повтор", 0, 1),
+        _Cell("Повтор", 0, 2),
+        _Cell("Повтор", 0, 3),
+        _Cell("Два", 1, 0),
+        _Cell("Два", 1, 1),
+        _Cell("Поле", 2, 0),
+        _Cell("Значение", 2, 1),
     ]
-    assert len(control_chunks) == 1
-    assert control_chunks[0].metadata["block_type"] == "text"
-    assert len(documents) == len({item.page_content for item in documents})
-
-
-def test_excel_builds_aggregate_chunks_with_row_context(tmp_path: Path) -> None:
-    path = tmp_path / "sales.xlsx"
-    _create_sales_workbook(path)
-
-    documents = DocumentProcessor(chunk_size=300, chunk_overlap=0).load(str(path))
-
-    revenue_aggregate = next(
-        document
-        for document in documents
-        if document.metadata["sheet"] == "Monthly Summary"
-        and document.metadata["block_type"] == "aggregate"
-        and document.metadata["aggregate_column"] == "Выручка"
+    document = SimpleNamespace(
+        tables=[SimpleNamespace(data=SimpleNamespace(table_cells=cells))]
     )
-    assert "максимальная месячная величина" in revenue_aggregate.page_content
-    assert 'Максимум по показателю "Выручка": 17 925 500' in revenue_aggregate.page_content
-    assert "Месяц: Март 2026" in revenue_aggregate.page_content
-    assert 'Сумма по показателю "Выручка": 44 942 800' in revenue_aggregate.page_content
+
+    normalized = normalize_repeated_table_cells(document)
+
+    assert normalized == 3
+    assert [cell.text for cell in cells[:4]] == ["Повтор", "", "", ""]
+    assert [cell.text for cell in cells[4:6]] == ["Два", "Два"]
+    assert [cell.text for cell in cells[6:]] == ["Поле", "Значение"]
 
 
-def test_excel_converts_field_description_table_to_facts(tmp_path: Path) -> None:
-    path = tmp_path / "sales.xlsx"
-    _create_sales_workbook(path)
+def test_text_file_gets_chunk_metadata_and_respects_zero_overlap(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "notes.txt"
+    path.write_text("Первый абзац. Второй абзац. Третий абзац.", encoding="utf-8")
+    processor = DocumentProcessor(chunk_size=20, chunk_overlap=0)
 
-    documents = DocumentProcessor(chunk_size=300, chunk_overlap=0).load(str(path))
+    documents = processor.load(path)
 
-    reference = next(
-        document
-        for document in documents
-        if document.metadata["sheet"] == "Reference"
-        and document.metadata["block_type"] == "key_value"
+    assert documents
+    assert processor._splitter._chunk_overlap == 0
+    assert len({document.metadata["doc_id"] for document in documents}) == len(documents)
+    assert all(document.metadata["source"] == path.name for document in documents)
+    assert all(document.metadata["source_id"] == str(path.resolve()) for document in documents)
+    assert [document.metadata["chunk_index"] for document in documents] == list(
+        range(1, len(documents) + 1)
     )
-    assert "Маркер: SALES-QUARTZ-3472" in reference.page_content
-    assert "Уникальная максимальная выручка: 3 391 500 ₽" in reference.page_content
-    assert "Поле:" not in reference.page_content
+
+
+def test_docling_chunks_are_deduplicated_and_receive_stable_ids(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "sales.xlsx"
+    path.write_bytes(b"fake workbook")
+    converted_document = SimpleNamespace(tables=[])
+    chunks = [
+        _Chunk("Общая выручка: 100", _Meta()),
+        _Chunk("Общая   выручка: 100", _Meta()),
+        _Chunk("Максимальная выручка: 60", _Meta()),
+    ]
+    processor = DocumentProcessor(chunk_size=100, chunk_overlap=0)
+    processor._docling_converter = _Converter(converted_document)
+    processor._docling_chunker = _Chunker(chunks)
+
+    documents = processor.load_file(path)
+
+    assert [document.page_content for document in documents] == [
+        "Общая выручка: 100",
+        "Максимальная выручка: 60",
+    ]
+    assert [document.metadata["chunk_index"] for document in documents] == [1, 2]
+    assert len({document.metadata["doc_id"] for document in documents}) == 2
+    assert all(document.metadata["document_type"] == "xlsx" for document in documents)
     assert all("_prechunked" not in document.metadata for document in documents)
