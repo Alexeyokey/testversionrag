@@ -2,6 +2,7 @@
 # Python 3.11 pip resolves compatible transitive versions during the image build.
 accelerate>=0.34
 beautifulsoup4>=4.12
+docling>=2.113.0
 langchain-core>=0.3
 langchain-text-splitters>=0.3
 openpyxl>=3.1

@@ -17,7 +17,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", action="store_true")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    index_parser = subparsers.add_parser("index", help="Проиндексировать файл, папку или URL")
+    index_parser = subparsers.add_parser("index", help="Проиндексировать файл или папку")
     index_parser.add_argument("source")
     index_parser.add_argument(
         "--recreate",

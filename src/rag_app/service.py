@@ -34,6 +34,8 @@ class RagService:
         processor = DocumentProcessor(
             chunk_size=self.settings.chunk_size,
             chunk_overlap=self.settings.chunk_overlap,
+            embedding_model=self.settings.embedding_model,
+            trust_remote_code=self.settings.trust_remote_code,
         )
         documents = processor.load(source)
         if not documents:
