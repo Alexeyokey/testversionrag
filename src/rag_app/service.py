@@ -84,6 +84,7 @@ class RagService:
             trust_remote_code=self.settings.trust_remote_code,
             base_url=self.settings.vllm_base_url,
             api_key=self.settings.vllm_api_key,
+            thinking=self.settings.thinking,
             timeout=self.settings.vllm_timeout,
         )
         return generator.answer(question, format_documents(documents)), documents

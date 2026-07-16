@@ -23,6 +23,7 @@ class Settings:
     vllm_api_key: str | None = None
     vllm_timeout: float = 120.0
     trust_remote_code: bool = True
+    thinking: bool = False
     enable_reranker: bool = True
     chunk_size: int = 512
     chunk_overlap: int = 50
@@ -49,6 +50,7 @@ class Settings:
             vllm_timeout=float(os.getenv("RAG_VLLM_TIMEOUT", defaults.vllm_timeout)),
             trust_remote_code=_as_bool("RAG_TRUST_REMOTE_CODE", defaults.trust_remote_code),
             enable_reranker=_as_bool("RAG_ENABLE_RERANKER", defaults.enable_reranker),
+            thinking = _as_bool("RAG_THINKING", defaults.thinking),
             chunk_size=int(os.getenv("RAG_CHUNK_SIZE", defaults.chunk_size)),
             chunk_overlap=int(os.getenv("RAG_CHUNK_OVERLAP", defaults.chunk_overlap)),
             embedding_batch_size=int(

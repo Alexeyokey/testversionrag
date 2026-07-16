@@ -34,6 +34,7 @@ class TextGenerator:
         max_new_tokens: int = 256,
         trust_remote_code: bool = True,
         base_url: str = "http://localhost:8000/v1",
+        thinking: bool = False,
         api_key: str | None = None,
         timeout: float = 120.0,
     ) -> None:
@@ -43,6 +44,7 @@ class TextGenerator:
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
         self.endpoint = f"{base_url.rstrip('/')}/chat/completions"
+        self.thinking = thinking
         self.api_key = api_key
         self.timeout = timeout
 
@@ -60,6 +62,9 @@ class TextGenerator:
                 {"role": "user", "content": human_content},
             ],
             "max_tokens": self.max_new_tokens,
+            "chat_template_kwargs": {
+        "enable_thinking": self.thinking,
+            },
             "temperature": 0,
         }
         headers = {"Content-Type": "application/json"}
