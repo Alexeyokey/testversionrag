@@ -52,41 +52,6 @@ class MarkdownTableSerializerProvider(ChunkingSerializerProvider):
         )
 
 
-def normalize_repeated_table_cells(
-    document: DoclingCoreDocument,
-    minimum_repetitions: int = 3,
-) -> int:
-    """Убрать копии объединённых ячеек, не изменяя исходный XLSX."""
-    normalized_cells = 0
-
-    for table in document.tables:
-        cells_by_row: dict[int, list] = {}
-        for cell in table.data.table_cells:
-            if cell.text.strip():
-                cells_by_row.setdefault(cell.start_row_offset_idx, []).append(cell)
-
-        for row_cells in cells_by_row.values():
-            if len(row_cells) < minimum_repetitions:
-                continue
-
-            normalized_texts = {
-                " ".join(cell.text.split()).casefold()
-                for cell in row_cells
-            }
-            if len(normalized_texts) != 1:
-                continue
-
-            ordered_cells = sorted(
-                row_cells,
-                key=lambda cell: cell.start_col_offset_idx,
-            )
-            for cell in ordered_cells[1:]:
-                cell.text = ""
-                normalized_cells += 1
-
-    return normalized_cells
-
-
 class DocumentProcessor:
     """
     Загружает документы и преобразует их в LangChain Document.
@@ -194,8 +159,6 @@ class DocumentProcessor:
 
         conversion = converter.convert(source=path)
         docling_document = conversion.document
-        if path.suffix.lower() == ".xlsx":
-            normalize_repeated_table_cells(docling_document)
 
         documents: list[Document] = []
         seen_content: set[str] = set()

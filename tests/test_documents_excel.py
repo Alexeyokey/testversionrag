@@ -4,17 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
-from rag_app.documents import (
-    DocumentProcessor,
-    normalize_repeated_table_cells,
-)
-
-
-@dataclass
-class _Cell:
-    text: str
-    start_row_offset_idx: int
-    start_col_offset_idx: int
+from rag_app.documents import DocumentProcessor
 
 
 class _Meta:
@@ -47,29 +37,6 @@ class _Chunker:
         return chunk.text
 
 
-def test_normalize_repeated_table_cells_collapses_only_long_repeats() -> None:
-    cells = [
-        _Cell("Повтор", 0, 0),
-        _Cell("Повтор", 0, 1),
-        _Cell("Повтор", 0, 2),
-        _Cell("Повтор", 0, 3),
-        _Cell("Два", 1, 0),
-        _Cell("Два", 1, 1),
-        _Cell("Поле", 2, 0),
-        _Cell("Значение", 2, 1),
-    ]
-    document = SimpleNamespace(
-        tables=[SimpleNamespace(data=SimpleNamespace(table_cells=cells))]
-    )
-
-    normalized = normalize_repeated_table_cells(document)
-
-    assert normalized == 3
-    assert [cell.text for cell in cells[:4]] == ["Повтор", "", "", ""]
-    assert [cell.text for cell in cells[4:6]] == ["Два", "Два"]
-    assert [cell.text for cell in cells[6:]] == ["Поле", "Значение"]
-
-
 def test_text_file_gets_chunk_metadata_and_respects_zero_overlap(
     tmp_path: Path,
 ) -> None:
@@ -94,7 +61,7 @@ def test_docling_chunks_are_deduplicated_and_receive_stable_ids(
 ) -> None:
     path = tmp_path / "sales.xlsx"
     path.write_bytes(b"fake workbook")
-    converted_document = SimpleNamespace(tables=[])
+    converted_document = SimpleNamespace()
     chunks = [
         _Chunk("Общая выручка: 100", _Meta()),
         _Chunk("Общая   выручка: 100", _Meta()),
