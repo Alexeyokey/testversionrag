@@ -51,7 +51,7 @@ class Settings:
             vllm_timeout=float(os.getenv("RAG_VLLM_TIMEOUT", defaults.vllm_timeout)),
             trust_remote_code=_as_bool("RAG_TRUST_REMOTE_CODE", defaults.trust_remote_code),
             enable_reranker=_as_bool("RAG_ENABLE_RERANKER", defaults.enable_reranker),
-            temperature=_as_bool("RAG_TEMPERATURE", defaults.temperature),
+            temperature=float("RAG_TEMPERATURE", defaults.temperature),
             thinking = _as_bool("RAG_THINKING", defaults.thinking),
             chunk_size=int(os.getenv("RAG_CHUNK_SIZE", defaults.chunk_size)),
             chunk_overlap=int(os.getenv("RAG_CHUNK_OVERLAP", defaults.chunk_overlap)),
