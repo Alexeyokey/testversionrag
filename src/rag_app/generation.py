@@ -80,7 +80,11 @@ class TextGenerator:
                 headers=headers,
                 timeout=self.timeout,
             )
-            response.raise_for_status()
+            if not response.ok:
+                raise RuntimeError(
+                    f"vLLM вернул HTTP {response.status_code}: {response.text}"
+                )
+
             body = response.json()
             content = body["choices"][0]["message"]["content"]
         except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as error:
