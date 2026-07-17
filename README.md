@@ -111,7 +111,8 @@ Compose использует закреплённый образ `vllm/vllm-open
 - `RAG_VLLM_GPU_MEMORY_UTILIZATION` — доля памяти GPU для vLLM (по умолчанию 0.6);
 - `RAG_MAX_NEW_TOKENS` — предел длины ответа;
 - `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP` — разбиение документов;
-- `RAG_DOCLING_CHUNK_TOKENS` — токеновый лимит чанков DOCX/ODT/XLSX;
+- `RAG_DOCLING_CHUNK_TOKENS` — токеновый лимит чанков PDF/DOCX/ODT/XLSX;
+- `RAG_EMBEDDING_BATCH_SIZE` — число чанков в одной порции embedding и записи в Qdrant;
 - `RAG_TOP_K`, `RAG_CANDIDATE_K` — количество результатов;
 - `RAG_VECTOR_WEIGHT`, `RAG_BM25_WEIGHT`, `RAG_RANK_CONSTANT` — объединение рангов.
 
@@ -130,5 +131,68 @@ pytest
 ruff check .
 docker compose config
 ```
+
+### Простая проверка качества RAG
+
+Сначала проиндексируйте тестовые документы, затем запустите вопросы из JSONL:
+
+```powershell
+rag index "C:\path\to\test-documents" --recreate
+rag evaluate evaluation\testset.example.jsonl --output evaluation\results.json
+```
+
+Одна строка тестового набора выглядит так:
+
+```json
+{"question":"Когда заключён договор?","reference":"15 марта 2025 года","answer_terms":["15 марта 2025"],"context_terms":["договор"],"expected_sources":["contract.pdf"]}
+```
+
+- `answer_terms` проверяются в ответе генеративной модели;
+- `context_terms` проверяются в найденных чанках и отдельно оценивают retrieval;
+- `expected_sources` проверяет, что поиск вернул нужный файл;
+- `reference` сохраняется в отчёте; если `answer_terms` не задан, он используется как
+  ожидаемый фрагмент ответа.
+
+Команда возвращает код `0`, если пройдены все проверки, и `1`, если хотя бы одна
+проверка не прошла. Подробности записываются в JSON-отчёт.
+
+### Семантическая оценка RAGAS через vLLM
+
+RAGAS использует тот же OpenAI-compatible endpoint и по умолчанию ту же модель, что
+команда `rag ask`. Для каждого вопроса считаются `faithfulness`, `factual_correctness`,
+`context_precision` и `context_recall`:
+
+```powershell
+rag evaluate-ragas evaluation\testset.example.jsonl `
+  --threshold 0.7 `
+  --output evaluation\ragas-results.json
+```
+
+В Docker тот же запуск выглядит так:
+
+```bash
+docker compose run --rm app evaluate-ragas \
+  /evaluation/testset.example.jsonl \
+  --threshold 0.7 \
+  --output /evaluation/ragas-results.json
+```
+
+Compose подключает локальный каталог `./evaluation` как `/evaluation`, поэтому входной
+набор доступен контейнеру, а JSON-отчёт сохраняется на хосте.
+
+У каждой строки JSONL обязательно должно быть поле `reference`. Judge настраивается так:
+
+```dotenv
+# Пусто — использовать RAG_GENERATION_MODEL и RAG_VLLM_BASE_URL.
+RAGAS_JUDGE_MODEL=
+RAGAS_THRESHOLD=0.7
+RAGAS_MAX_TOKENS=2048
+```
+
+Если `RAGAS_JUDGE_MODEL` задан, это имя должно обслуживаться сервером по адресу
+`RAG_VLLM_BASE_URL`. Один vLLM-сервис обычно обслуживает одну модель, поэтому для работы
+без второго GPU оставьте значение пустым: генерация и judging будут выполняться
+последовательно одной моделью. RAGAS использует структурированные ответы OpenAI API;
+выбранная модель и версия vLLM должны поддерживать JSON schema/structured output.
 
 Исходный ноутбук не изменяется, проект не зависит от состояния его ячеек.

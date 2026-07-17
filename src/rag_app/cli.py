@@ -31,6 +31,48 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ask_parser = subparsers.add_parser("ask", help="Сформировать ответ по найденному контексту")
     ask_parser.add_argument("question")
+
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="Запустить простой набор проверок RAG",
+    )
+    evaluate_parser.add_argument("testset", type=Path, help="JSONL-файл с тестами")
+    evaluate_parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("evaluation_results.json"),
+        help="Куда сохранить JSON-отчёт",
+    )
+    evaluate_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Проверить только первые N вопросов",
+    )
+
+    ragas_parser = subparsers.add_parser(
+        "evaluate-ragas",
+        help="Оценить RAG через judge-модель и RAGAS",
+    )
+    ragas_parser.add_argument("testset", type=Path, help="JSONL-файл с reference")
+    ragas_parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("ragas_results.json"),
+        help="Куда сохранить JSON-отчёт RAGAS",
+    )
+    ragas_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Оценить только первые N вопросов",
+    )
+    ragas_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="Минимальный балл каждой метрики от 0 до 1",
+    )
     return parser
 
 
@@ -47,7 +89,8 @@ def main() -> None:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    service = RagService(Settings.from_env())
+    settings = Settings.from_env()
+    service = RagService(settings)
     try:
         if args.command == "index":
             count = service.index(args.source, recreate=args.recreate)
@@ -65,6 +108,67 @@ def main() -> None:
         elif args.command == "ask":
             answer, _ = service.ask(args.question)
             print(answer)
+        elif args.command == "evaluate":
+            from rag_app.evaluation import evaluate, load_cases, summarize, write_report
+
+            cases = load_cases(args.testset)
+            if args.limit is not None:
+                if args.limit <= 0:
+                    raise ValueError("--limit должен быть больше нуля")
+                cases = cases[: args.limit]
+
+            results = evaluate(service, cases)
+            summary = summarize(results)
+            report_path = write_report(args.output, results)
+            print(
+                "Проверки: "
+                f"{summary['passed']}/{summary['total']} пройдено "
+                f"({summary['pass_rate']:.1%})"
+            )
+            print(f"Отчёт: {report_path}")
+            if summary["failed"]:
+                raise SystemExit(1)
+        elif args.command == "evaluate-ragas":
+            from rag_app.evaluation import load_cases
+            from rag_app.ragas_evaluation import (
+                evaluate_with_ragas,
+                summarize_ragas,
+                write_ragas_report,
+            )
+
+            cases = load_cases(args.testset)
+            if args.limit is not None:
+                if args.limit <= 0:
+                    raise ValueError("--limit должен быть больше нуля")
+                cases = cases[: args.limit]
+            threshold = (
+                settings.ragas_threshold
+                if args.threshold is None
+                else args.threshold
+            )
+            results = evaluate_with_ragas(
+                service,
+                cases,
+                settings,
+                threshold=threshold,
+            )
+            summary = summarize_ragas(results, threshold)
+            report_path = write_ragas_report(
+                args.output,
+                results,
+                settings,
+                threshold,
+            )
+            mean_score = summary["mean_score"]
+            mean_label = "n/a" if mean_score is None else f"{mean_score:.3f}"
+            print(
+                "RAGAS: "
+                f"{summary['passed']}/{summary['total']} пройдено; "
+                f"средний балл: {mean_label}"
+            )
+            print(f"Отчёт: {report_path}")
+            if summary["failed"]:
+                raise SystemExit(1)
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         parser.error(str(error))
 

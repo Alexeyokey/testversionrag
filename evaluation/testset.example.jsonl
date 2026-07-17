@@ -1,0 +1,2 @@
+{"question":"Когда заключён договор?","reference":"15 марта 2025 года","answer_terms":["15 марта 2025"],"context_terms":["договор","15 марта 2025"],"expected_sources":["contract.pdf"]}
+{"question":"Какова общая выручка в регионе Урал?","reference":"8 269 600 рублей","answer_terms":["8 269 600"],"context_terms":["Урал","выручка"],"expected_sources":["sales.xlsx"]}

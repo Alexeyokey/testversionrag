@@ -12,6 +12,17 @@ class _EmbeddingModel:
         return [[0.1, 0.2, 0.3]]
 
 
+class _BatchEmbeddingModel:
+    tokenizer = object()
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
+        return [[float(index), 0.2, 0.3] for index, _ in enumerate(texts)]
+
+
 class _Processor:
     received_tokenizer = None
 
@@ -28,6 +39,23 @@ class _Processor:
                     "source_id": "/data/xlsx/sales.xlsx",
                 },
             )
+        ]
+
+
+class _BatchProcessor:
+    def __init__(self, **kwargs) -> None:
+        pass
+
+    def load(self, source: str) -> list[Document]:
+        return [
+            Document(
+                page_content=f"Чанк {index}",
+                metadata={
+                    "doc_id": f"chunk-{index}",
+                    "source_id": "/data/report.pdf",
+                },
+            )
+            for index in range(5)
         ]
 
 
@@ -65,3 +93,26 @@ def test_index_connects_processor_embeddings_and_vector_store(monkeypatch) -> No
     assert store.calls[1] == ("delete", {"/data/xlsx/sales.xlsx"})
     assert store.calls[2][0] == "upsert"
     assert store.calls[2][2] == [[0.1, 0.2, 0.3]]
+
+
+def test_index_embeds_and_upserts_in_bounded_batches(monkeypatch) -> None:
+    embedding_model = _BatchEmbeddingModel()
+    store = _Store()
+    service = RagService(
+        Settings(
+            enable_reranker=False,
+            embedding_batch_size=2,
+        )
+    )
+    service._embedding_model = embedding_model
+    service._store = store
+    monkeypatch.setattr("rag_app.service.DocumentProcessor", _BatchProcessor)
+
+    count = service.index("/data", recreate=False)
+
+    assert count == 5
+    assert [len(batch) for batch in embedding_model.calls] == [2, 2, 1]
+    assert [call[0] for call in store.calls].count("ensure") == 1
+    assert [call[0] for call in store.calls].count("delete") == 1
+    upsert_calls = [call for call in store.calls if call[0] == "upsert"]
+    assert [len(call[1]) for call in upsert_calls] == [2, 2, 1]

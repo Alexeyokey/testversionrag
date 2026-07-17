@@ -71,6 +71,7 @@ services:
     volumes:
       - ./src:/app/src:ro
       - ./data:/data:ro
+      - ./evaluation:/evaluation
       - hf-cache:/root/.cache/huggingface
     depends_on:
       qdrant:

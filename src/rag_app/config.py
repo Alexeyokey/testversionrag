@@ -36,6 +36,9 @@ class Settings:
     bm25_weight: float = 0.4
     rank_constant: int = 10
     max_new_tokens: int = 256
+    ragas_judge_model: str | None = None
+    ragas_threshold: float = 0.7
+    ragas_max_tokens: int = 2048
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -71,6 +74,13 @@ class Settings:
             bm25_weight=float(os.getenv("RAG_BM25_WEIGHT", defaults.bm25_weight)),
             rank_constant=int(os.getenv("RAG_RANK_CONSTANT", defaults.rank_constant)),
             max_new_tokens=int(os.getenv("RAG_MAX_NEW_TOKENS", defaults.max_new_tokens)),
+            ragas_judge_model=os.getenv("RAGAS_JUDGE_MODEL") or None,
+            ragas_threshold=float(
+                os.getenv("RAGAS_THRESHOLD", defaults.ragas_threshold)
+            ),
+            ragas_max_tokens=int(
+                os.getenv("RAGAS_MAX_TOKENS", defaults.ragas_max_tokens)
+            ),
         )
 
     def validate(self) -> None:
@@ -82,6 +92,8 @@ class Settings:
             raise ValueError("RAG_CHUNK_OVERLAP должен быть меньше RAG_CHUNK_SIZE")
         if self.docling_chunk_tokens <= 0:
             raise ValueError("RAG_DOCLING_CHUNK_TOKENS должен быть больше нуля")
+        if self.embedding_batch_size <= 0:
+            raise ValueError("RAG_EMBEDDING_BATCH_SIZE должен быть больше нуля")
         if self.top_k <= 0 or self.candidate_k < self.top_k:
             raise ValueError("RAG_CANDIDATE_K должен быть не меньше RAG_TOP_K > 0")
         if self.vector_weight < 0 or self.bm25_weight < 0:
@@ -94,3 +106,7 @@ class Settings:
             raise ValueError("RAG_MAX_NEW_TOKENS должен быть больше нуля")
         if self.vllm_timeout <= 0:
             raise ValueError("RAG_VLLM_TIMEOUT должен быть больше нуля")
+        if not 0 <= self.ragas_threshold <= 1:
+            raise ValueError("RAGAS_THRESHOLD должен находиться в диапазоне от 0 до 1")
+        if self.ragas_max_tokens <= 0:
+            raise ValueError("RAGAS_MAX_TOKENS должен быть больше нуля")

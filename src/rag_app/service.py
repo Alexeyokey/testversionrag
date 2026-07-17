@@ -43,15 +43,41 @@ class RagService:
         documents = processor.load(source)
         if not documents:
             raise ValueError("В источнике не найдено текста для индексации")
-        vectors = embedding_model.embed_documents(
-            [document.page_content for document in documents]
-        )
-        self._store.ensure_collection(len(vectors[0]), recreate=recreate)
-        if not recreate:
-            self._store.delete_sources(
-                {str(document.metadata["source_id"]) for document in documents}
+
+        # Обрабатываем полный цикл небольшими порциями: после upsert векторы текущего
+        # батча больше не удерживаются в памяти вместе с векторами всего корпуса.
+        batch_size = self.settings.embedding_batch_size
+        source_ids = {
+            str(document.metadata["source_id"])
+            for document in documents
+        }
+        collection_initialized = False
+
+        for start in range(0, len(documents), batch_size):
+            document_batch = documents[start : start + batch_size]
+            vector_batch = embedding_model.embed_documents(
+                [document.page_content for document in document_batch]
             )
-        self._store.upsert(documents, vectors)
+
+            if len(vector_batch) != len(document_batch):
+                raise RuntimeError(
+                    "Embedding-модель вернула неожиданное количество векторов: "
+                    f"{len(vector_batch)} вместо {len(document_batch)}"
+                )
+
+            if not collection_initialized:
+                self._store.ensure_collection(
+                    len(vector_batch[0]),
+                    recreate=recreate,
+                )
+                if not recreate:
+                    # Удаляем прежнюю версию источников только после успешного
+                    # построения первого батча, чтобы ранняя ошибка сохранила индекс.
+                    self._store.delete_sources(source_ids)
+                collection_initialized = True
+
+            self._store.upsert(document_batch, vector_batch)
+
         return len(documents)
 
     def search(self, query: str) -> list[Document]:
