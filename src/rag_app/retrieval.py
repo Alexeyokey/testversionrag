@@ -111,8 +111,16 @@ class HybridRetriever:
         self.bm25 = BM25Index(documents)
 
     def retrieve(self, query: str) -> list[Document]:
-        vector_documents = self.vector_search(query, self.candidate_k)
-        bm25_documents = self.bm25.search(query, self.candidate_k)
+        vector_documents = (
+            self.vector_search(query, self.candidate_k)
+            if self.vector_weight > 0
+            else []
+        )
+        bm25_documents = (
+            self.bm25.search(query, self.candidate_k)
+            if self.bm25_weight > 0
+            else []
+        )
         candidates = self._merge(vector_documents, bm25_documents)[: self.candidate_k]
         if self.reranker is not None:
             return self.reranker.rerank(query, candidates, self.top_k)

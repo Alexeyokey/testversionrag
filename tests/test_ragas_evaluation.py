@@ -38,9 +38,9 @@ class _Scorer:
 def test_ragas_scores_answer_and_context_with_injected_judges() -> None:
     scorers = {
         "faithfulness": _Scorer(0.9),
-        "factual_correctness": _Scorer(0.8),
         "context_precision": _Scorer(0.75),
         "context_recall": _Scorer(0.6),
+        "answer_relevancy": _Scorer(0.8),
     }
     cases = [
         EvaluationCase(
@@ -70,9 +70,9 @@ def test_ragas_scores_answer_and_context_with_injected_judges() -> None:
 def test_ragas_requires_reference() -> None:
     scorers = {name: _Scorer(1.0) for name in (
         "faithfulness",
-        "factual_correctness",
         "context_precision",
         "context_recall",
+        "answer_relevancy",
     )}
 
     results = evaluate_with_ragas(

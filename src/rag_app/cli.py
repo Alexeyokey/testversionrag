@@ -73,6 +73,34 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Минимальный балл каждой метрики от 0 до 1",
     )
+
+    benchmark_parser = subparsers.add_parser(
+        "benchmark",
+        help="Сравнить 4 RAG-конфигурации через RAGAS и DeepEval",
+    )
+    benchmark_parser.add_argument(
+        "testset",
+        type=Path,
+        help="Синтетический JSONL-набор с question и reference",
+    )
+    benchmark_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("evaluation/benchmark-results"),
+        help="Каталог для JSON, CSV и Markdown-отчётов",
+    )
+    benchmark_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Использовать только первые N вопросов",
+    )
+    benchmark_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="Минимальный балл метрики от 0 до 1",
+    )
     return parser
 
 
@@ -169,6 +197,45 @@ def main() -> None:
             print(f"Отчёт: {report_path}")
             if summary["failed"]:
                 raise SystemExit(1)
+        elif args.command == "benchmark":
+            from rag_app.benchmark import (
+                comparison_rows,
+                run_benchmark,
+                write_benchmark_reports,
+            )
+            from rag_app.evaluation import load_cases
+
+            cases = load_cases(args.testset)
+            if args.limit is not None:
+                if args.limit <= 0:
+                    raise ValueError("--limit должен быть больше нуля")
+                cases = cases[: args.limit]
+            threshold = (
+                settings.ragas_threshold
+                if args.threshold is None
+                else args.threshold
+            )
+            results = run_benchmark(
+                settings,
+                cases,
+                threshold=threshold,
+                progress=print,
+            )
+            report_paths = write_benchmark_reports(
+                args.output_dir,
+                results,
+                settings,
+            )
+            rows = comparison_rows(results)
+            valid_rows = [row for row in rows if row["combined_mean"] is not None]
+            if valid_rows:
+                best = max(valid_rows, key=lambda row: float(row["combined_mean"]))
+                print(
+                    "Лучшая конфигурация: "
+                    f"{best['configuration']} ({float(best['combined_mean']):.3f})"
+                )
+            for report_name, report_path in report_paths.items():
+                print(f"{report_name}: {report_path}")
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         parser.error(str(error))
 

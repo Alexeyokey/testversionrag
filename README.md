@@ -159,8 +159,8 @@ rag evaluate evaluation\testset.example.jsonl --output evaluation\results.json
 ### Семантическая оценка RAGAS через vLLM
 
 RAGAS использует тот же OpenAI-compatible endpoint и по умолчанию ту же модель, что
-команда `rag ask`. Для каждого вопроса считаются `faithfulness`, `factual_correctness`,
-`context_precision` и `context_recall`:
+команда `rag ask`. Для каждого вопроса считаются `faithfulness`, `context_precision`,
+`context_recall` и `answer_relevancy`:
 
 ```powershell
 rag evaluate-ragas evaluation\testset.example.jsonl `
@@ -194,5 +194,51 @@ RAGAS_MAX_TOKENS=2048
 без второго GPU оставьте значение пустым: генерация и judging будут выполняться
 последовательно одной моделью. RAGAS использует структурированные ответы OpenAI API;
 выбранная модель и версия vLLM должны поддерживать JSON schema/structured output.
+
+### Сравнение 4 конфигураций через RAGAS и DeepEval
+
+В проект включены фиктивный корпус `evaluation/synthetic_corpus` и 12 эталонных
+вопросов `evaluation/synthetic_testset.jsonl`. Эксперимент сравнивает:
+
+1. `vector_only` — только dense vector search;
+2. `bm25_only` — только лексический BM25;
+3. `hybrid` — vector + BM25 через weighted RRF;
+4. `hybrid_reranker` — hybrid retrieval и CrossEncoder reranker.
+
+Сначала проиндексируйте синтетические документы:
+
+```bash
+docker compose build app
+docker compose up -d qdrant vllm
+docker compose run --rm app index /evaluation/synthetic_corpus --recreate
+```
+
+Затем выполните общий benchmark:
+
+```bash
+docker compose run --rm app benchmark \
+  /evaluation/synthetic_testset.jsonl \
+  --threshold 0.7 \
+  --output-dir /evaluation/benchmark-results
+```
+
+Для быстрой проверки соединения сначала добавьте `--limit 1`. Полный запуск делает
+много последовательных judge-вызовов и на локальной модели может занять заметное время.
+
+Ответ RAG для каждой пары «конфигурация × вопрос» генерируется один раз. RAGAS и
+DeepEval получают один и тот же `response`, `reference` и список `retrieved_contexts`.
+Это исключает случайное различие ответов между двумя evaluator-ами.
+
+Результаты:
+
+- `benchmark-details.json` — ответы, контексты, оценки, причины и ошибки;
+- `benchmark-comparison.csv` — строки-конфигурации и столбцы-метрики обеих библиотек;
+- `benchmark-report.md` — описание метрик, сводная таблица и автоматический вывод о
+  лучшей конфигурации.
+
+Сравниваются одинаковые понятия: Faithfulness, Context Precision, Context Recall и
+Answer Relevancy. Формулы и judge-промпты библиотек различаются, поэтому абсолютные
+баллы RAGAS и DeepEval не обязаны совпадать. Для выбора конфигурации важнее согласованный
+рост оценок и одинаковое ранжирование вариантов.
 
 Исходный ноутбук не изменяется, проект не зависит от состояния его ячеек.

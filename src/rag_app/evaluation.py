@@ -38,6 +38,18 @@ class EvaluationResult:
     error: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RagEvaluationSample:
+    """Один зафиксированный прогон RAG для последующей оценки разными инструментами."""
+
+    question: str
+    reference: str
+    response: str
+    retrieved_contexts: tuple[str, ...]
+    sources: tuple[str, ...]
+    error: str | None = None
+
+
 def load_cases(path: str | Path) -> list[EvaluationCase]:
     """Загрузить тесты из JSONL: один JSON-объект на строку."""
     testset_path = Path(path)
@@ -153,6 +165,58 @@ def evaluate(service: RagService, cases: list[EvaluationCase]) -> list[Evaluatio
                 )
             )
     return results
+
+
+def collect_rag_samples(
+    service: RagService,
+    cases: list[EvaluationCase],
+) -> list[RagEvaluationSample]:
+    """Один раз получить ответы и контексты, чтобы evaluator-ы сравнивали одинаковые данные."""
+    samples: list[RagEvaluationSample] = []
+    for case in cases:
+        if not case.reference:
+            samples.append(
+                RagEvaluationSample(
+                    question=case.question,
+                    reference="",
+                    response="",
+                    retrieved_contexts=(),
+                    sources=(),
+                    error="Для LLM-оценки поле reference обязательно",
+                )
+            )
+            continue
+
+        try:
+            response, documents = service.ask(case.question)
+            samples.append(
+                RagEvaluationSample(
+                    question=case.question,
+                    reference=case.reference,
+                    response=response,
+                    retrieved_contexts=tuple(
+                        document.page_content for document in documents
+                    ),
+                    sources=tuple(
+                        dict.fromkeys(
+                            str(document.metadata.get("source", "unknown"))
+                            for document in documents
+                        )
+                    ),
+                )
+            )
+        except Exception as error:
+            samples.append(
+                RagEvaluationSample(
+                    question=case.question,
+                    reference=case.reference,
+                    response="",
+                    retrieved_contexts=(),
+                    sources=(),
+                    error=f"{type(error).__name__}: {error}",
+                )
+            )
+    return samples
 
 
 def summarize(results: list[EvaluationResult]) -> dict[str, int | float | None]:

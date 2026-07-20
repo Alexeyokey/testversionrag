@@ -10,10 +10,17 @@ from rag_app.vector_store import VectorStore
 
 
 class RagService:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        embedding_model: EmbeddingModel | None = None,
+    ) -> None:
         settings.validate()
         self.settings = settings
-        self._embedding_model: EmbeddingModel | None = None
+        self._embedding_model = embedding_model
+        self._reranker = None
+        self._retriever: HybridRetriever | None = None
         self._store = VectorStore(
             url=settings.qdrant_url,
             collection_name=settings.collection_name,
@@ -78,34 +85,36 @@ class RagService:
 
             self._store.upsert(document_batch, vector_batch)
 
+        # При следующем поиске перечитать обновлённый индекс и перестроить BM25.
+        self._retriever = None
         return len(documents)
 
     def search(self, query: str) -> list[Document]:
-        documents = self._store.load_documents()
-        if not documents:
-            return []
+        if self._retriever is None:
+            documents = self._store.load_documents()
+            if not documents:
+                return []
 
-        def vector_search(text: str, limit: int) -> list[Document]:
-            vector = self.embedding_model.embed_query(text)
-            return self._store.search(vector, limit)
+            def vector_search(text: str, limit: int) -> list[Document]:
+                vector = self.embedding_model.embed_query(text)
+                return self._store.search(vector, limit)
 
-        reranker = None
-        if self.settings.enable_reranker:
-            from rag_app.reranker import CrossEncoderReranker
+            if self.settings.enable_reranker and self._reranker is None:
+                from rag_app.reranker import CrossEncoderReranker
 
-            reranker = CrossEncoderReranker(self.settings.reranker_model)
+                self._reranker = CrossEncoderReranker(self.settings.reranker_model)
 
-        retriever = HybridRetriever(
-            documents=documents,
-            vector_search=vector_search,
-            reranker=reranker,
-            top_k=self.settings.top_k,
-            candidate_k=self.settings.candidate_k,
-            rank_constant=self.settings.rank_constant,
-            vector_weight=self.settings.vector_weight,
-            bm25_weight=self.settings.bm25_weight,
-        )
-        return retriever.retrieve(query)
+            self._retriever = HybridRetriever(
+                documents=documents,
+                vector_search=vector_search,
+                reranker=self._reranker,
+                top_k=self.settings.top_k,
+                candidate_k=self.settings.candidate_k,
+                rank_constant=self.settings.rank_constant,
+                vector_weight=self.settings.vector_weight,
+                bm25_weight=self.settings.bm25_weight,
+            )
+        return self._retriever.retrieve(query)
 
     def ask(self, question: str) -> tuple[str, list[Document]]:
         if not self.settings.generation_model:
