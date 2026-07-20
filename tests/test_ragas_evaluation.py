@@ -3,7 +3,11 @@ from types import SimpleNamespace
 
 from rag_app.config import Settings
 from rag_app.evaluation import EvaluationCase
-from rag_app.ragas_evaluation import evaluate_with_ragas, summarize_ragas
+from rag_app.ragas_evaluation import (
+    _build_vllm_async_client,
+    evaluate_with_ragas,
+    summarize_ragas,
+)
 
 
 @dataclass
@@ -84,3 +88,29 @@ def test_ragas_requires_reference() -> None:
 
     assert results[0].passed is False
     assert "reference обязательно" in str(results[0].error)
+
+
+def test_ragas_judge_uses_async_openai_client(monkeypatch) -> None:
+    captured = {}
+
+    class _AsyncOpenAI:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("openai.AsyncOpenAI", _AsyncOpenAI)
+    settings = Settings(
+        enable_reranker=False,
+        vllm_base_url="http://vllm:8000/v1",
+        vllm_api_key="test-key",
+        vllm_timeout=42,
+    )
+
+    client = _build_vllm_async_client(settings)
+
+    assert isinstance(client, _AsyncOpenAI)
+    assert captured == {
+        "api_key": "test-key",
+        "base_url": "http://vllm:8000/v1",
+        "timeout": 42,
+        "max_retries": 2,
+    }

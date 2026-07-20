@@ -49,7 +49,6 @@ def build_ragas_scorers(
 ) -> dict[str, Any]:
     """Создать четыре RAGAS-метрики поверх существующего vLLM OpenAI API."""
     try:
-        from openai import OpenAI
         from ragas.embeddings.base import BaseRagasEmbedding
         from ragas.llms import llm_factory
         from ragas.metrics.collections import (
@@ -70,14 +69,9 @@ def build_ragas_scorers(
             "Задайте RAGAS_JUDGE_MODEL или RAG_GENERATION_MODEL для judge-модели"
         )
 
-    # vLLM реализует OpenAI-compatible API, поэтому RAGAS использует обычный
-    # OpenAI-клиент с тем же URL, что и генеративная модель приложения.
-    client = OpenAI(
-        api_key=settings.vllm_api_key or "local-vllm-key",
-        base_url=settings.vllm_base_url,
-        timeout=settings.vllm_timeout,
-        max_retries=2,
-    )
+    # Collections-метрики RAGAS вызывают llm.agenerate(), поэтому judge должен
+    # использовать AsyncOpenAI даже при синхронном запуске команды CLI.
+    client = _build_vllm_async_client(settings)
     judge = llm_factory(
         judge_model,
         provider="openai",
@@ -145,6 +139,24 @@ def build_ragas_scorers(
             embeddings=evaluator_embeddings,
         ),
     }
+
+
+def _build_vllm_async_client(settings: Settings) -> Any:
+    """Создать асинхронный OpenAI-compatible клиент для RAGAS judge."""
+    try:
+        from openai import AsyncOpenAI
+    except ImportError as error:
+        raise RuntimeError(
+            "Для RAGAS-оценки установите зависимости проекта заново: "
+            "python -m pip install -e ."
+        ) from error
+
+    return AsyncOpenAI(
+        api_key=settings.vllm_api_key or "local-vllm-key",
+        base_url=settings.vllm_base_url,
+        timeout=settings.vllm_timeout,
+        max_retries=2,
+    )
 
 
 def evaluate_with_ragas(
