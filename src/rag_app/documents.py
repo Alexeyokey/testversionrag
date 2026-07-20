@@ -6,7 +6,12 @@ from uuid import NAMESPACE_URL, uuid5
 from docling.chunking import HybridChunker
 from docling.datamodel.backend_options import MsExcelBackendOptions
 from docling.datamodel.base_models import InputFormat
-from docling.document_converter import DocumentConverter, ExcelFormatOption
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import (
+    DocumentConverter,
+    ExcelFormatOption,
+    PdfFormatOption,
+)
 from docling_core.transforms.chunker.hierarchical_chunker import (
     ChunkingDocSerializer,
     ChunkingSerializerProvider,
@@ -236,6 +241,15 @@ class DocumentProcessor:
                     InputFormat.DOCX,
                 ],
                 format_options={
+                    # Если PDF содержат готовый текстовый слой то OCR должен быть отключён, чтобы
+                    # не загружать модели RapidOCR и не распознавать текст повторно.
+                    # Layout-анализ и восстановление структуры таблиц остаются включены.
+                    InputFormat.PDF: PdfFormatOption(
+                        pipeline_options=PdfPipelineOptions(
+                            do_ocr=False,
+                            do_table_structure=True,
+                        )
+                    ),
                     # Диаграммы часто повторяют значения исходных ячеек; их разбор
                     # отключён, чтобы не индексировать одни финансовые данные дважды.
                     InputFormat.XLSX: ExcelFormatOption(

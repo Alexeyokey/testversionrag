@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
+from docling.datamodel.base_models import InputFormat
 from rag_app.documents import DocumentProcessor
 
 
@@ -100,3 +101,21 @@ def test_pdf_is_processed_by_docling(tmp_path: Path) -> None:
         "Выручка по региону Урал: 638 000"
     ]
     assert documents[0].metadata["document_type"] == "pdf"
+
+
+def test_docling_pdf_pipeline_disables_ocr(monkeypatch) -> None:
+    captured: dict = {}
+
+    class _ConfiguredConverter:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("rag_app.documents.DocumentConverter", _ConfiguredConverter)
+    processor = DocumentProcessor(chunk_size=100, chunk_overlap=0)
+    processor._docling_chunker = object()
+
+    processor._get_docling_components()
+
+    pdf_option = captured["format_options"][InputFormat.PDF]
+    assert pdf_option.pipeline_options.do_ocr is False
+    assert pdf_option.pipeline_options.do_table_structure is True
