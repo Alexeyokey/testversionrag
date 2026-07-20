@@ -7,6 +7,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Docling обрабатывает PDF через библиотеки компьютерного зрения. В базовом
+# python:3.11-slim нет их системных зависимостей, из-за чего загрузка PDF падает
+# с ошибками libxcb.so.1/libGL.so.1 ещё до создания чанков.
+RUN apt-get update && \
+    apt-get install --yes --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+        libsm6 \
+        libx11-6 \
+        libxext6 \
+        libxcb1 && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 
 RUN --mount=type=cache,target=/root/.cache/pip \
