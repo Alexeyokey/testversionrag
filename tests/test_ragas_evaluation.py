@@ -8,6 +8,7 @@ from rag_app.ragas_evaluation import (
     evaluate_with_ragas,
     summarize_ragas,
 )
+from rag_app.metric_cache import MetricScoreCache
 
 
 @dataclass
@@ -174,3 +175,55 @@ def test_ragas_judge_uses_async_openai_client(monkeypatch) -> None:
         "timeout": 42,
         "max_retries": 2,
     }
+
+
+def test_ragas_reuses_successful_metric_scores_from_disk(tmp_path) -> None:
+    scorers = {
+        "faithfulness": _Scorer(0.9),
+        "context_recall": _Scorer(0.8),
+        "answer_accuracy": _Scorer(1.0),
+        "context_precision": _Scorer(0.75),
+        "answer_relevancy": _Scorer(0.85),
+    }
+    cases = [
+        EvaluationCase(
+            question="Когда заключён договор?",
+            reference="Договор заключён 15 марта 2025 года.",
+        )
+    ]
+    settings = Settings(enable_reranker=False)
+    cache = MetricScoreCache(tmp_path)
+
+    first = evaluate_with_ragas(
+        _Service(),
+        cases,
+        settings,
+        scorers=scorers,
+        metric_cache=cache,
+    )[0]
+    second = evaluate_with_ragas(
+        _Service(),
+        cases,
+        settings,
+        scorers=scorers,
+        metric_cache=cache,
+    )[0]
+    refreshed = evaluate_with_ragas(
+        _Service(),
+        cases,
+        settings,
+        scorers=scorers,
+        metric_cache=cache,
+        refresh_metric_cache=True,
+    )[0]
+
+    assert first.cached_metrics == ()
+    assert second.cached_metrics == (
+        "faithfulness",
+        "context_recall",
+        "answer_accuracy",
+        "context_precision",
+        "answer_relevancy",
+    )
+    assert refreshed.cached_metrics == ()
+    assert all(len(scorer.calls) == 2 for scorer in scorers.values())

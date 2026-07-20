@@ -14,6 +14,11 @@ from rag_app.evaluation import (
     REQUIRED_JUDGE_METRICS,
     collect_rag_samples,
 )
+from rag_app.metric_cache import (
+    MetricScoreCache,
+    evaluator_cache_config,
+    metric_inputs,
+)
 
 if TYPE_CHECKING:
     from rag_app.config import Settings
@@ -39,6 +44,7 @@ class RagasEvaluationResult:
     metric_errors: dict[str, str]
     metric_reasons: dict[str, str]
     skipped_metrics: tuple[str, ...]
+    cached_metrics: tuple[str, ...]
     error: str | None = None
 
 
@@ -170,6 +176,8 @@ def evaluate_with_ragas(
     threshold: float | None = None,
     scorers: dict[str, Any] | None = None,
     include_answer_relevancy: bool = True,
+    metric_cache: MetricScoreCache | None = None,
+    refresh_metric_cache: bool = False,
 ) -> list[RagasEvaluationResult]:
     """Получить ответы RAG и оценить обязательными и диагностическими метриками."""
     samples = collect_rag_samples(service, cases)
@@ -180,6 +188,8 @@ def evaluate_with_ragas(
         scorers=scorers,
         embedding_model=service.embedding_model if scorers is None else None,
         include_answer_relevancy=include_answer_relevancy,
+        metric_cache=metric_cache,
+        refresh_metric_cache=refresh_metric_cache,
     )
 
 
@@ -191,6 +201,8 @@ def evaluate_samples_with_ragas(
     scorers: dict[str, Any] | None = None,
     embedding_model: EmbeddingModel | None = None,
     include_answer_relevancy: bool = True,
+    metric_cache: MetricScoreCache | None = None,
+    refresh_metric_cache: bool = False,
 ) -> list[RagasEvaluationResult]:
     """Оценить заранее сохранённые ответы и контексты, не вызывая RAG повторно."""
     resolved_threshold = settings.ragas_threshold if threshold is None else threshold
@@ -215,6 +227,7 @@ def evaluate_samples_with_ragas(
     skipped_metric_names = tuple(
         metric_name for metric_name in METRIC_NAMES if metric_name not in enabled_metric_names
     )
+    cache_config = evaluator_cache_config(settings, "ragas")
 
     results: list[RagasEvaluationResult] = []
     for sample in samples:
@@ -254,7 +267,28 @@ def evaluate_samples_with_ragas(
         }
         metric_errors: dict[str, str] = {}
         metric_reasons: dict[str, str] = {}
+        cached_metrics: list[str] = []
         for metric_name in enabled_metric_names:
+            cache_inputs = metric_inputs(
+                metric_name,
+                question=sample.question,
+                reference=sample.reference,
+                response=sample.response,
+                retrieved_contexts=sample.retrieved_contexts,
+            )
+            if metric_cache is not None and not refresh_metric_cache:
+                cached_score = metric_cache.get(
+                    evaluator="ragas",
+                    metric_name=metric_name,
+                    evaluator_config=cache_config,
+                    inputs=cache_inputs,
+                )
+                if cached_score is not None:
+                    scores[metric_name] = cached_score.value
+                    if cached_score.reason:
+                        metric_reasons[metric_name] = cached_score.reason
+                    cached_metrics.append(metric_name)
+                    continue
             try:
                 metric_result = active_scorers[metric_name].score(
                     **metric_arguments[metric_name]
@@ -267,6 +301,20 @@ def evaluate_samples_with_ragas(
                 reason = getattr(metric_result, "reason", None)
                 if reason:
                     metric_reasons[metric_name] = str(reason)
+                if metric_cache is not None:
+                    try:
+                        metric_cache.put(
+                            evaluator="ragas",
+                            metric_name=metric_name,
+                            evaluator_config=cache_config,
+                            inputs=cache_inputs,
+                            value=numeric_value,
+                            reason=str(reason) if reason else None,
+                        )
+                    except OSError:
+                        # Ошибка записи кэша не должна превращать успешно
+                        # рассчитанную метрику в ошибку оценки.
+                        pass
             except Exception as error:
                 # Ошибка одной метрики не скрывает оценки, полученные от остальных.
                 metric_errors[metric_name] = f"{type(error).__name__}: {error}"
@@ -302,6 +350,7 @@ def evaluate_samples_with_ragas(
                 metric_errors=metric_errors,
                 metric_reasons=metric_reasons,
                 skipped_metrics=skipped_metric_names,
+                cached_metrics=tuple(cached_metrics),
             )
         )
 
@@ -338,6 +387,7 @@ def summarize_ragas(
         "threshold": threshold,
         "required_metrics": list(REQUIRED_JUDGE_METRICS),
         "optional_metrics": list(OPTIONAL_JUDGE_METRICS),
+        "cache_hits": sum(len(result.cached_metrics) for result in results),
         "mean_score": sum(mean_values) / len(mean_values) if mean_values else None,
         "metrics": metric_averages,
     }
@@ -383,5 +433,6 @@ def _failed_result(
         metric_errors={},
         metric_reasons={},
         skipped_metrics=METRIC_NAMES,
+        cached_metrics=(),
         error=error,
     )

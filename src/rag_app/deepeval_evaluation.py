@@ -10,6 +10,11 @@ from rag_app.evaluation import (
     REQUIRED_JUDGE_METRICS,
     RagEvaluationSample,
 )
+from rag_app.metric_cache import (
+    MetricScoreCache,
+    evaluator_cache_config,
+    metric_inputs,
+)
 
 if TYPE_CHECKING:
     from rag_app.config import Settings
@@ -33,6 +38,7 @@ class DeepEvalEvaluationResult:
     metric_errors: dict[str, str]
     metric_reasons: dict[str, str]
     skipped_metrics: tuple[str, ...]
+    cached_metrics: tuple[str, ...]
     error: str | None = None
 
 
@@ -209,6 +215,8 @@ def evaluate_samples_with_deepeval(
     scorers: dict[str, Any] | None = None,
     test_case_factory: Callable[..., Any] | None = None,
     include_answer_relevancy: bool = True,
+    metric_cache: MetricScoreCache | None = None,
+    refresh_metric_cache: bool = False,
 ) -> list[DeepEvalEvaluationResult]:
     """Оценить ответы обязательными и диагностическими метриками DeepEval."""
     resolved_threshold = settings.ragas_threshold if threshold is None else threshold
@@ -235,6 +243,7 @@ def evaluate_samples_with_deepeval(
     skipped_metric_names = tuple(
         metric_name for metric_name in METRIC_NAMES if metric_name not in enabled_metric_names
     )
+    cache_config = evaluator_cache_config(settings, "deepeval")
 
     if test_case_factory is None:
         try:
@@ -263,9 +272,30 @@ def evaluate_samples_with_deepeval(
         }
         metric_errors: dict[str, str] = {}
         metric_reasons: dict[str, str] = {}
+        cached_metrics: list[str] = []
 
         for metric_name in enabled_metric_names:
             metric = active_scorers[metric_name]
+            cache_inputs = metric_inputs(
+                metric_name,
+                question=sample.question,
+                reference=sample.reference,
+                response=sample.response,
+                retrieved_contexts=sample.retrieved_contexts,
+            )
+            if metric_cache is not None and not refresh_metric_cache:
+                cached_score = metric_cache.get(
+                    evaluator="deepeval",
+                    metric_name=metric_name,
+                    evaluator_config=cache_config,
+                    inputs=cache_inputs,
+                )
+                if cached_score is not None:
+                    scores[metric_name] = cached_score.value
+                    if cached_score.reason:
+                        metric_reasons[metric_name] = cached_score.reason
+                    cached_metrics.append(metric_name)
+                    continue
             try:
                 measured = metric.measure(test_case)
                 value = getattr(metric, "score", measured)
@@ -278,6 +308,18 @@ def evaluate_samples_with_deepeval(
                 reason = getattr(metric, "reason", None)
                 if reason:
                     metric_reasons[metric_name] = str(reason)
+                if metric_cache is not None:
+                    try:
+                        metric_cache.put(
+                            evaluator="deepeval",
+                            metric_name=metric_name,
+                            evaluator_config=cache_config,
+                            inputs=cache_inputs,
+                            value=numeric_value,
+                            reason=str(reason) if reason else None,
+                        )
+                    except OSError:
+                        pass
             except Exception as error:
                 metric_errors[metric_name] = f"{type(error).__name__}: {error}"
 
@@ -312,6 +354,7 @@ def evaluate_samples_with_deepeval(
                 metric_errors=metric_errors,
                 metric_reasons=metric_reasons,
                 skipped_metrics=skipped_metric_names,
+                cached_metrics=tuple(cached_metrics),
             )
         )
 
@@ -347,6 +390,7 @@ def summarize_deepeval(
         "threshold": threshold,
         "required_metrics": list(REQUIRED_JUDGE_METRICS),
         "optional_metrics": list(OPTIONAL_JUDGE_METRICS),
+        "cache_hits": sum(len(result.cached_metrics) for result in results),
         "mean_score": sum(mean_values) / len(mean_values) if mean_values else None,
         "metrics": metric_averages,
     }
@@ -368,5 +412,6 @@ def _failed_result(
         metric_errors={},
         metric_reasons={},
         skipped_metrics=METRIC_NAMES,
+        cached_metrics=(),
         error=error,
     )

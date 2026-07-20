@@ -197,6 +197,24 @@ docker compose run --rm app evaluate-ragas \
 Compose подключает локальный каталог `./evaluation` как `/evaluation`, поэтому входной
 набор доступен контейнеру, а JSON-отчёт сохраняется на хосте.
 
+Успешные значения judge-метрик автоматически сохраняются в постоянном кэше. При
+повторном запуске RAGAS и DeepEval не вызывают модель для уже известной комбинации
+метрики, вопроса, эталона, ответа и контекста. В ключ также входят judge-модель, версия
+библиотеки и embedding-модель для RAGAS, поэтому изменившиеся данные пересчитываются
+автоматически. Ошибки метрик не кэшируются.
+
+В JSON-результате поле `cached_metrics` показывает метрики, взятые из кэша, а
+`summary.cache_hits` — их общее количество. Управление кэшем:
+
+```bash
+# Принудительно пересчитать и обновить совпадающие оценки.
+rag evaluate-ragas evaluation/testset.example.jsonl --refresh-metric-cache
+
+# Использовать другой каталог или полностью отключить кэш на один запуск.
+rag evaluate-ragas evaluation/testset.example.jsonl --metric-cache-dir evaluation/my-cache
+rag evaluate-ragas evaluation/testset.example.jsonl --no-metric-cache
+```
+
 У каждой строки JSONL обязательно должно быть поле `reference`. Judge настраивается так:
 
 ```dotenv
@@ -204,6 +222,8 @@ Compose подключает локальный каталог `./evaluation` к
 RAGAS_JUDGE_MODEL=
 RAGAS_THRESHOLD=0.7
 RAGAS_MAX_TOKENS=2048
+EVALUATION_METRIC_CACHE_ENABLED=true
+EVALUATION_METRIC_CACHE_DIR=evaluation/metric-cache
 ```
 
 Если `RAGAS_JUDGE_MODEL` задан, это имя должно обслуживаться сервером по адресу
@@ -241,6 +261,9 @@ docker compose run --rm app benchmark \
 
 Benchmark также принимает `--skip-answer-relevancy`; метрика будет пропущена и в
 RAGAS, и в DeepEval, чтобы сравнение оставалось симметричным.
+Флаги `--metric-cache-dir`, `--no-metric-cache` и `--refresh-metric-cache` работают
+аналогично. В Docker Compose кэш по умолчанию находится в `/evaluation/metric-cache`
+и поэтому сохраняется в локальной папке `./evaluation/metric-cache`.
 
 Для быстрой проверки соединения сначала добавьте `--limit 1`. Полный запуск делает
 много последовательных judge-вызовов и на локальной модели может занять заметное время.

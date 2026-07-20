@@ -6,6 +6,7 @@ from rag_app.deepeval_evaluation import (
     summarize_deepeval,
 )
 from rag_app.evaluation import RagEvaluationSample
+from rag_app.metric_cache import MetricScoreCache
 
 
 class _Metric:
@@ -122,3 +123,47 @@ def test_deepeval_preserves_rag_error() -> None:
     assert result.passed is False
     assert result.error == "RAG failed"
     assert not scorers["faithfulness"].cases
+
+
+def test_deepeval_reuses_successful_metric_scores_from_disk(tmp_path) -> None:
+    scorers = {
+        "faithfulness": _Metric(0.9),
+        "context_recall": _Metric(0.8),
+        "answer_accuracy": _Metric(1.0),
+        "context_precision": _Metric(0.75),
+        "answer_relevancy": _Metric(0.85),
+    }
+    sample = RagEvaluationSample(
+        question="Когда заключён договор?",
+        reference="15 марта 2025 года",
+        response="Договор заключён 15 марта 2025 года.",
+        retrieved_contexts=("Дата договора — 15 марта 2025 года.",),
+        sources=("contract.md",),
+    )
+    cache = MetricScoreCache(tmp_path)
+    settings = Settings(enable_reranker=False)
+
+    first = evaluate_samples_with_deepeval(
+        [sample],
+        settings,
+        scorers=scorers,
+        test_case_factory=_case_factory,
+        metric_cache=cache,
+    )[0]
+    second = evaluate_samples_with_deepeval(
+        [sample],
+        settings,
+        scorers=scorers,
+        test_case_factory=_case_factory,
+        metric_cache=cache,
+    )[0]
+
+    assert first.cached_metrics == ()
+    assert second.cached_metrics == (
+        "faithfulness",
+        "context_recall",
+        "answer_accuracy",
+        "context_precision",
+        "answer_relevancy",
+    )
+    assert all(len(metric.cases) == 1 for metric in scorers.values())

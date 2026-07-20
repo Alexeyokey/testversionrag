@@ -68,6 +68,9 @@ services:
       RAG_ENABLE_RERANKER: ${RAG_ENABLE_RERANKER:-true}
       RAG_TRUST_REMOTE_CODE: ${RAG_TRUST_REMOTE_CODE:-true}
       RAG_DOCLING_CHUNK_TOKENS: ${RAG_DOCLING_CHUNK_TOKENS:-512}
+      EVALUATION_METRIC_CACHE_ENABLED: ${EVALUATION_METRIC_CACHE_ENABLED:-true}
+      # В контейнере кэш должен лежать на подключённом постоянном томе.
+      EVALUATION_METRIC_CACHE_DIR: /evaluation/metric-cache
     volumes:
       - ./src:/app/src:ro
       - ./data:/data:ro

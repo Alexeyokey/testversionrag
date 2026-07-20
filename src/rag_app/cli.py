@@ -11,6 +11,34 @@ from rag_app.config import Settings
 from rag_app.service import RagService
 
 
+def _add_metric_cache_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--metric-cache-dir",
+        type=Path,
+        default=None,
+        help="Каталог постоянного кэша judge-метрик",
+    )
+    parser.add_argument(
+        "--no-metric-cache",
+        action="store_true",
+        help="Не читать и не сохранять оценки judge-метрик",
+    )
+    parser.add_argument(
+        "--refresh-metric-cache",
+        action="store_true",
+        help="Пересчитать метрики и заменить совпадающие записи кэша",
+    )
+
+
+def _metric_cache_from_args(args, settings: Settings):
+    if args.no_metric_cache or not settings.evaluation_metric_cache_enabled:
+        return None
+    from rag_app.metric_cache import MetricScoreCache
+
+    directory = args.metric_cache_dir or Path(settings.evaluation_metric_cache_dir)
+    return MetricScoreCache(directory)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Гибридный RAG: Qdrant + BM25 + reranker")
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
@@ -78,6 +106,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Не вычислять диагностическую Answer Relevancy; записать null в отчёт",
     )
+    _add_metric_cache_arguments(ragas_parser)
 
     benchmark_parser = subparsers.add_parser(
         "benchmark",
@@ -111,6 +140,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Не вычислять Answer Relevancy в RAGAS и DeepEval",
     )
+    _add_metric_cache_arguments(benchmark_parser)
     return parser
 
 
@@ -184,12 +214,15 @@ def main() -> None:
                 if args.threshold is None
                 else args.threshold
             )
+            metric_cache = _metric_cache_from_args(args, settings)
             results = evaluate_with_ragas(
                 service,
                 cases,
                 settings,
                 threshold=threshold,
                 include_answer_relevancy=not args.skip_answer_relevancy,
+                metric_cache=metric_cache,
+                refresh_metric_cache=args.refresh_metric_cache,
             )
             summary = summarize_ragas(results, threshold)
             report_path = write_ragas_report(
@@ -206,6 +239,11 @@ def main() -> None:
                 f"средний балл: {mean_label}"
             )
             print(f"Отчёт: {report_path}")
+            if metric_cache is not None:
+                print(
+                    f"Кэш метрик: {metric_cache.directory}; "
+                    f"использовано оценок: {summary['cache_hits']}"
+                )
             if args.skip_answer_relevancy:
                 print("Answer Relevancy: не измерялась (null)")
             if summary["failed"]:
@@ -228,12 +266,15 @@ def main() -> None:
                 if args.threshold is None
                 else args.threshold
             )
+            metric_cache = _metric_cache_from_args(args, settings)
             results = run_benchmark(
                 settings,
                 cases,
                 threshold=threshold,
                 include_answer_relevancy=not args.skip_answer_relevancy,
                 progress=print,
+                metric_cache=metric_cache,
+                refresh_metric_cache=args.refresh_metric_cache,
             )
             report_paths = write_benchmark_reports(
                 args.output_dir,
@@ -250,6 +291,16 @@ def main() -> None:
                 )
             for report_name, report_path in report_paths.items():
                 print(f"{report_name}: {report_path}")
+            if metric_cache is not None:
+                cache_hits = sum(
+                    result.ragas_summary["cache_hits"]
+                    + result.deepeval_summary["cache_hits"]
+                    for result in results
+                )
+                print(
+                    f"Кэш метрик: {metric_cache.directory}; "
+                    f"использовано оценок: {cache_hits}"
+                )
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         parser.error(str(error))
 

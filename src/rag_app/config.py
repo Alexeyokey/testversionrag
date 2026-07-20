@@ -39,6 +39,8 @@ class Settings:
     ragas_judge_model: str | None = None
     ragas_threshold: float = 0.7
     ragas_max_tokens: int = 2048
+    evaluation_metric_cache_enabled: bool = True
+    evaluation_metric_cache_dir: str = "evaluation/metric-cache"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -81,6 +83,14 @@ class Settings:
             ragas_max_tokens=int(
                 os.getenv("RAGAS_MAX_TOKENS", defaults.ragas_max_tokens)
             ),
+            evaluation_metric_cache_enabled=_as_bool(
+                "EVALUATION_METRIC_CACHE_ENABLED",
+                defaults.evaluation_metric_cache_enabled,
+            ),
+            evaluation_metric_cache_dir=os.getenv(
+                "EVALUATION_METRIC_CACHE_DIR",
+                defaults.evaluation_metric_cache_dir,
+            ),
         )
 
     def validate(self) -> None:
@@ -110,3 +120,5 @@ class Settings:
             raise ValueError("RAGAS_THRESHOLD должен находиться в диапазоне от 0 до 1")
         if self.ragas_max_tokens <= 0:
             raise ValueError("RAGAS_MAX_TOKENS должен быть больше нуля")
+        if not self.evaluation_metric_cache_dir.strip():
+            raise ValueError("EVALUATION_METRIC_CACHE_DIR не может быть пустым")

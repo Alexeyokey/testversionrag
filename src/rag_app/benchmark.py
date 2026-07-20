@@ -19,6 +19,7 @@ from rag_app.evaluation import (
     RagEvaluationSample,
     collect_rag_samples,
 )
+from rag_app.metric_cache import MetricScoreCache
 from rag_app.ragas_evaluation import (
     RagasEvaluationResult,
     build_ragas_scorers,
@@ -102,6 +103,8 @@ def run_benchmark(
     test_case_factory: Callable[..., Any] | None = None,
     progress: Callable[[str], None] | None = None,
     include_answer_relevancy: bool = True,
+    metric_cache: MetricScoreCache | None = None,
+    refresh_metric_cache: bool = False,
 ) -> list[BenchmarkConfigurationResult]:
     """Прогнать четыре RAG-конфигурации и оценить одни ответы двумя инструментами."""
     if len(configurations) < 4:
@@ -160,6 +163,8 @@ def run_benchmark(
             threshold=resolved_threshold,
             scorers=active_ragas_scorers,
             include_answer_relevancy=include_answer_relevancy,
+            metric_cache=metric_cache,
+            refresh_metric_cache=refresh_metric_cache,
         )
         if progress:
             progress(f"[{configuration.name}] оценка DeepEval...")
@@ -170,6 +175,8 @@ def run_benchmark(
             scorers=active_deepeval_scorers,
             test_case_factory=test_case_factory,
             include_answer_relevancy=include_answer_relevancy,
+            metric_cache=metric_cache,
+            refresh_metric_cache=refresh_metric_cache,
         )
         benchmark_results.append(
             BenchmarkConfigurationResult(
