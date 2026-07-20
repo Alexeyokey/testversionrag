@@ -12,7 +12,7 @@ rag_project/
 ├── src/rag_app/
 │   ├── cli.py           # команды index, search и ask
 │   ├── config.py        # конфигурация из переменных окружения
-│   ├── documents.py     # TXT/MD/RST/PDF/DOCX/ODT/XLSX
+│   ├── documents.py     # загрузка, RTF-декодирование и чанкование
 │   ├── embeddings.py    # Hugging Face embedding model
 │   ├── vector_store.py  # работа с Qdrant
 │   ├── retrieval.py     # BM25 и reciprocal-rank fusion
@@ -123,6 +123,11 @@ PDF, DOCX, ODT и XLSX преобразуются через Docling и деля
 сериализуются в Markdown с повторением заголовка при разделении, а данные встроенных
 диаграмм не индексируются повторно. Содержимое ячеек сохраняется без эвристического
 удаления повторяющихся значений, чтобы не потерять контекст таблицы.
+
+RTF обрабатывается встроенным декодером без LibreOffice и дополнительных Python-пакетов.
+Он учитывает `ansicpg`, кириллическую кодировку CP1251, Unicode-последовательности `\uN`,
+скрытые служебные группы и видимый результат полей. Полученный текст делится
+`RecursiveCharacterTextSplitter` с параметрами `RAG_CHUNK_SIZE` и `RAG_CHUNK_OVERLAP`.
 
 ## Проверки
 
