@@ -36,8 +36,9 @@ def test_benchmark_runs_rag_once_per_configuration_and_question(tmp_path) -> Non
     rag_calls: list[tuple[str, str]] = []
     metric_names = (
         "faithfulness",
-        "context_precision",
         "context_recall",
+        "answer_accuracy",
+        "context_precision",
         "answer_relevancy",
     )
 
@@ -60,8 +61,9 @@ def test_benchmark_runs_rag_once_per_configuration_and_question(tmp_path) -> Non
         "hybrid_reranker",
     ]
     assert rows[0]["ragas_faithfulness"] == 0.8
+    assert rows[0]["ragas_answer_accuracy"] == 0.8
     assert rows[0]["deepeval_answer_relevancy"] == 0.8
-    assert rows[0]["combined_mean"] == 0.8
+    assert abs(rows[0]["combined_mean"] - 0.8) < 1e-12
 
     reports = write_benchmark_reports(
         tmp_path,

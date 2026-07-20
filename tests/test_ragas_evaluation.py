@@ -42,8 +42,9 @@ class _Scorer:
 def test_ragas_scores_answer_and_context_with_injected_judges() -> None:
     scorers = {
         "faithfulness": _Scorer(0.9),
-        "context_precision": _Scorer(0.75),
         "context_recall": _Scorer(0.6),
+        "answer_accuracy": _Scorer(0.95),
+        "context_precision": _Scorer(0.75),
         "answer_relevancy": _Scorer(0.8),
     }
     cases = [
@@ -69,13 +70,72 @@ def test_ragas_scores_answer_and_context_with_injected_judges() -> None:
     assert scorers["faithfulness"].calls[0]["retrieved_contexts"] == [
         "Дата договора: 15 марта 2025 года."
     ]
+    assert scorers["answer_accuracy"].calls[0]["reference"] == (
+        "Договор заключён 15 марта 2025 года."
+    )
+
+
+def test_ragas_optional_metrics_do_not_fail_case() -> None:
+    scorers = {
+        "faithfulness": _Scorer(0.9),
+        "context_recall": _Scorer(0.8),
+        "answer_accuracy": _Scorer(1.0),
+        "context_precision": _Scorer(0.1),
+        "answer_relevancy": _Scorer(0.2),
+    }
+
+    result = evaluate_with_ragas(
+        _Service(),
+        [
+            EvaluationCase(
+                question="Когда заключён договор?",
+                reference="Договор заключён 15 марта 2025 года.",
+            )
+        ],
+        Settings(enable_reranker=False),
+        threshold=0.7,
+        scorers=scorers,
+    )[0]
+
+    assert result.passed is True
+    assert result.mean_score == 0.9
+
+
+def test_ragas_can_skip_answer_relevancy() -> None:
+    scorers = {
+        "faithfulness": _Scorer(0.9),
+        "context_recall": _Scorer(0.8),
+        "answer_accuracy": _Scorer(1.0),
+        "context_precision": _Scorer(0.75),
+    }
+
+    results = evaluate_with_ragas(
+        _Service(),
+        [
+            EvaluationCase(
+                question="Когда заключён договор?",
+                reference="Договор заключён 15 марта 2025 года.",
+            )
+        ],
+        Settings(enable_reranker=False),
+        threshold=0.7,
+        scorers=scorers,
+        include_answer_relevancy=False,
+    )
+    summary = summarize_ragas(results, threshold=0.7)
+
+    assert results[0].passed is True
+    assert results[0].scores["answer_relevancy"] is None
+    assert results[0].skipped_metrics == ("answer_relevancy",)
+    assert summary["metrics"]["answer_relevancy"] is None
 
 
 def test_ragas_requires_reference() -> None:
     scorers = {name: _Scorer(1.0) for name in (
         "faithfulness",
-        "context_precision",
         "context_recall",
+        "answer_accuracy",
+        "context_precision",
         "answer_relevancy",
     )}
 

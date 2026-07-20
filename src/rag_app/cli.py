@@ -71,7 +71,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--threshold",
         type=float,
         default=None,
-        help="Минимальный балл каждой метрики от 0 до 1",
+        help="Минимальный балл каждой обязательной метрики от 0 до 1",
+    )
+    ragas_parser.add_argument(
+        "--skip-answer-relevancy",
+        action="store_true",
+        help="Не вычислять диагностическую Answer Relevancy; записать null в отчёт",
     )
 
     benchmark_parser = subparsers.add_parser(
@@ -99,7 +104,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--threshold",
         type=float,
         default=None,
-        help="Минимальный балл метрики от 0 до 1",
+        help="Минимальный балл обязательной метрики от 0 до 1",
+    )
+    benchmark_parser.add_argument(
+        "--skip-answer-relevancy",
+        action="store_true",
+        help="Не вычислять Answer Relevancy в RAGAS и DeepEval",
     )
     return parser
 
@@ -179,6 +189,7 @@ def main() -> None:
                 cases,
                 settings,
                 threshold=threshold,
+                include_answer_relevancy=not args.skip_answer_relevancy,
             )
             summary = summarize_ragas(results, threshold)
             report_path = write_ragas_report(
@@ -195,6 +206,8 @@ def main() -> None:
                 f"средний балл: {mean_label}"
             )
             print(f"Отчёт: {report_path}")
+            if args.skip_answer_relevancy:
+                print("Answer Relevancy: не измерялась (null)")
             if summary["failed"]:
                 raise SystemExit(1)
         elif args.command == "benchmark":
@@ -219,6 +232,7 @@ def main() -> None:
                 settings,
                 cases,
                 threshold=threshold,
+                include_answer_relevancy=not args.skip_answer_relevancy,
                 progress=print,
             )
             report_paths = write_benchmark_reports(

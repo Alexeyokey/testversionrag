@@ -4,18 +4,18 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
-from rag_app.evaluation import RagEvaluationSample
+from rag_app.evaluation import (
+    JUDGE_METRICS,
+    OPTIONAL_JUDGE_METRICS,
+    REQUIRED_JUDGE_METRICS,
+    RagEvaluationSample,
+)
 
 if TYPE_CHECKING:
     from rag_app.config import Settings
 
 
-METRIC_NAMES = (
-    "faithfulness",
-    "context_precision",
-    "context_recall",
-    "answer_relevancy",
-)
+METRIC_NAMES = JUDGE_METRICS
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,11 +27,12 @@ class DeepEvalEvaluationResult:
     response: str
     retrieved_contexts: tuple[str, ...]
     sources: tuple[str, ...]
-    scores: dict[str, float]
+    scores: dict[str, float | None]
     mean_score: float | None
     passed: bool
     metric_errors: dict[str, str]
     metric_reasons: dict[str, str]
+    skipped_metrics: tuple[str, ...]
     error: str | None = None
 
 
@@ -139,15 +140,21 @@ def build_deepeval_scorers(
     *,
     threshold: float | None = None,
     judge: Any | None = None,
+    include_answer_relevancy: bool = True,
 ) -> dict[str, Any]:
-    """Создать четыре нативные RAG-метрики DeepEval с общей judge-моделью."""
+    """Создать сопоставимые обязательные и диагностические DeepEval-метрики."""
     try:
         from deepeval.metrics import (
             AnswerRelevancyMetric,
             ContextualPrecisionMetric,
             ContextualRecallMetric,
             FaithfulnessMetric,
+            GEval,
         )
+        try:
+            from deepeval.test_case import SingleTurnParams
+        except ImportError:
+            from deepeval.test_case import LLMTestCaseParams as SingleTurnParams
     except ImportError as error:
         raise RuntimeError(
             "Для DeepEval установите зависимости проекта заново: "
@@ -162,12 +169,36 @@ def build_deepeval_scorers(
         "include_reason": True,
         "async_mode": False,
     }
-    return {
+    scorers: dict[str, Any] = {
         "faithfulness": FaithfulnessMetric(**common),
-        "context_precision": ContextualPrecisionMetric(**common),
         "context_recall": ContextualRecallMetric(**common),
-        "answer_relevancy": AnswerRelevancyMetric(**common),
+        "answer_accuracy": GEval(
+            name="Answer Accuracy",
+            model=evaluator,
+            threshold=resolved_threshold,
+            evaluation_params=[
+                SingleTurnParams.INPUT,
+                SingleTurnParams.ACTUAL_OUTPUT,
+                SingleTurnParams.EXPECTED_OUTPUT,
+            ],
+            evaluation_steps=[
+                "Compare the actual output directly with the expected output.",
+                (
+                    "Verify that every factual element required by the expected output "
+                    "is present and correct in the actual output."
+                ),
+                (
+                    "Penalize contradictions and material omissions, but do not "
+                    "penalize harmless wording differences or source citations."
+                ),
+            ],
+            async_mode=False,
+        ),
+        "context_precision": ContextualPrecisionMetric(**common),
     }
+    if include_answer_relevancy:
+        scorers["answer_relevancy"] = AnswerRelevancyMetric(**common)
+    return scorers
 
 
 def evaluate_samples_with_deepeval(
@@ -177,8 +208,9 @@ def evaluate_samples_with_deepeval(
     threshold: float | None = None,
     scorers: dict[str, Any] | None = None,
     test_case_factory: Callable[..., Any] | None = None,
+    include_answer_relevancy: bool = True,
 ) -> list[DeepEvalEvaluationResult]:
-    """Оценить те же ответы и контексты четырьмя нативными метриками DeepEval."""
+    """Оценить ответы обязательными и диагностическими метриками DeepEval."""
     resolved_threshold = settings.ragas_threshold if threshold is None else threshold
     if not 0 <= resolved_threshold <= 1:
         raise ValueError("Порог DeepEval должен находиться в диапазоне от 0 до 1")
@@ -186,13 +218,23 @@ def evaluate_samples_with_deepeval(
     active_scorers = scorers or build_deepeval_scorers(
         settings,
         threshold=resolved_threshold,
+        include_answer_relevancy=include_answer_relevancy,
     )
-    missing_metrics = set(METRIC_NAMES) - set(active_scorers)
+    missing_metrics = set(REQUIRED_JUDGE_METRICS) - set(active_scorers)
     if missing_metrics:
         raise ValueError(
             "Не созданы обязательные DeepEval-метрики: "
             + ", ".join(sorted(missing_metrics))
         )
+    enabled_metric_names = tuple(
+        metric_name
+        for metric_name in METRIC_NAMES
+        if metric_name in active_scorers
+        and (metric_name != "answer_relevancy" or include_answer_relevancy)
+    )
+    skipped_metric_names = tuple(
+        metric_name for metric_name in METRIC_NAMES if metric_name not in enabled_metric_names
+    )
 
     if test_case_factory is None:
         try:
@@ -216,11 +258,13 @@ def evaluate_samples_with_deepeval(
             expected_output=sample.reference,
             retrieval_context=list(sample.retrieved_contexts),
         )
-        scores: dict[str, float] = {}
+        scores: dict[str, float | None] = {
+            metric_name: None for metric_name in METRIC_NAMES
+        }
         metric_errors: dict[str, str] = {}
         metric_reasons: dict[str, str] = {}
 
-        for metric_name in METRIC_NAMES:
+        for metric_name in enabled_metric_names:
             metric = active_scorers[metric_name]
             try:
                 measured = metric.measure(test_case)
@@ -237,11 +281,23 @@ def evaluate_samples_with_deepeval(
             except Exception as error:
                 metric_errors[metric_name] = f"{type(error).__name__}: {error}"
 
-        mean_score = sum(scores.values()) / len(scores) if scores else None
+        required_scores = [
+            scores[metric_name]
+            for metric_name in REQUIRED_JUDGE_METRICS
+            if scores[metric_name] is not None
+        ]
+        mean_score = (
+            sum(float(score) for score in required_scores) / len(required_scores)
+            if required_scores
+            else None
+        )
         passed = (
-            not metric_errors
-            and len(scores) == len(METRIC_NAMES)
-            and all(score >= resolved_threshold for score in scores.values())
+            not any(name in metric_errors for name in REQUIRED_JUDGE_METRICS)
+            and all(
+                scores[name] is not None
+                and float(scores[name]) >= resolved_threshold
+                for name in REQUIRED_JUDGE_METRICS
+            )
         )
         results.append(
             DeepEvalEvaluationResult(
@@ -255,6 +311,7 @@ def evaluate_samples_with_deepeval(
                 passed=passed,
                 metric_errors=metric_errors,
                 metric_reasons=metric_reasons,
+                skipped_metrics=skipped_metric_names,
             )
         )
 
@@ -271,9 +328,11 @@ def summarize_deepeval(
         values = [
             result.scores[metric_name]
             for result in results
-            if metric_name in result.scores
+            if result.scores.get(metric_name) is not None
         ]
-        metric_averages[metric_name] = sum(values) / len(values) if values else None
+        metric_averages[metric_name] = (
+            sum(float(value) for value in values) / len(values) if values else None
+        )
 
     mean_values = [
         result.mean_score
@@ -286,6 +345,8 @@ def summarize_deepeval(
         "failed": len(results) - passed,
         "pass_rate": passed / len(results) if results else 0.0,
         "threshold": threshold,
+        "required_metrics": list(REQUIRED_JUDGE_METRICS),
+        "optional_metrics": list(OPTIONAL_JUDGE_METRICS),
         "mean_score": sum(mean_values) / len(mean_values) if mean_values else None,
         "metrics": metric_averages,
     }
@@ -301,10 +362,11 @@ def _failed_result(
         response=sample.response,
         retrieved_contexts=sample.retrieved_contexts,
         sources=sample.sources,
-        scores={},
+        scores={metric_name: None for metric_name in METRIC_NAMES},
         mean_score=None,
         passed=False,
         metric_errors={},
         metric_reasons={},
+        skipped_metrics=METRIC_NAMES,
         error=error,
     )

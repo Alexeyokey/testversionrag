@@ -30,8 +30,9 @@ def _case_factory(**kwargs):
 def test_deepeval_scores_precomputed_sample_without_calling_rag() -> None:
     scorers = {
         "faithfulness": _Metric(0.9),
-        "context_precision": _Metric(0.8),
         "context_recall": _Metric(0.7),
+        "answer_accuracy": _Metric(1.0),
+        "context_precision": _Metric(0.8),
         "answer_relevancy": _Metric(0.95),
     }
     sample = RagEvaluationSample(
@@ -60,13 +61,45 @@ def test_deepeval_scores_precomputed_sample_without_calling_rag() -> None:
     ]
 
 
+def test_deepeval_optional_metrics_do_not_fail_and_relevancy_can_be_skipped() -> None:
+    scorers = {
+        "faithfulness": _Metric(0.9),
+        "context_recall": _Metric(0.8),
+        "answer_accuracy": _Metric(1.0),
+        "context_precision": _Metric(0.1),
+    }
+    sample = RagEvaluationSample(
+        question="Когда заключён договор?",
+        reference="15 марта 2025 года",
+        response="Договор заключён 15 марта 2025 года.",
+        retrieved_contexts=("Дата договора — 15 марта 2025 года.",),
+        sources=("contract.md",),
+    )
+
+    results = evaluate_samples_with_deepeval(
+        [sample],
+        Settings(enable_reranker=False),
+        threshold=0.7,
+        scorers=scorers,
+        test_case_factory=_case_factory,
+        include_answer_relevancy=False,
+    )
+    summary = summarize_deepeval(results, threshold=0.7)
+
+    assert results[0].passed is True
+    assert results[0].scores["answer_relevancy"] is None
+    assert results[0].skipped_metrics == ("answer_relevancy",)
+    assert summary["metrics"]["answer_relevancy"] is None
+
+
 def test_deepeval_preserves_rag_error() -> None:
     scorers = {
         name: _Metric(1.0)
         for name in (
             "faithfulness",
-            "context_precision",
             "context_recall",
+            "answer_accuracy",
+            "context_precision",
             "answer_relevancy",
         )
     }

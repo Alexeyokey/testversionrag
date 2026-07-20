@@ -8,7 +8,10 @@ from typing import TYPE_CHECKING, Any
 
 from rag_app.evaluation import (
     EvaluationCase,
+    JUDGE_METRICS,
+    OPTIONAL_JUDGE_METRICS,
     RagEvaluationSample,
+    REQUIRED_JUDGE_METRICS,
     collect_rag_samples,
 )
 
@@ -18,12 +21,7 @@ if TYPE_CHECKING:
     from rag_app.service import RagService
 
 
-METRIC_NAMES = (
-    "faithfulness",
-    "context_precision",
-    "context_recall",
-    "answer_relevancy",
-)
+METRIC_NAMES = JUDGE_METRICS
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,23 +33,27 @@ class RagasEvaluationResult:
     response: str
     retrieved_contexts: tuple[str, ...]
     sources: tuple[str, ...]
-    scores: dict[str, float]
+    scores: dict[str, float | None]
     mean_score: float | None
     passed: bool
     metric_errors: dict[str, str]
     metric_reasons: dict[str, str]
+    skipped_metrics: tuple[str, ...]
     error: str | None = None
 
 
 def build_ragas_scorers(
     settings: Settings,
     embedding_model: EmbeddingModel | None = None,
+    *,
+    include_answer_relevancy: bool = True,
 ) -> dict[str, Any]:
-    """Создать четыре RAGAS-метрики поверх существующего vLLM OpenAI API."""
+    """Создать обязательные и выбранные диагностические RAGAS-метрики."""
     try:
         from ragas.embeddings.base import BaseRagasEmbedding
         from ragas.llms import llm_factory
         from ragas.metrics.collections import (
+            AnswerAccuracy,
             AnswerRelevancy,
             ContextPrecision,
             ContextRecall,
@@ -84,61 +86,62 @@ def build_ragas_scorers(
         ),
     )
 
-    if embedding_model is None:
-        from rag_app.embeddings import EmbeddingModel
-
-        embedding_model = EmbeddingModel(
-            settings.embedding_model,
-            batch_size=settings.embedding_batch_size,
-            trust_remote_code=settings.trust_remote_code,
-        )
-
-    class ExistingEmbeddingAdapter(BaseRagasEmbedding):
-        """Адаптировать уже загруженную embedding-модель проекта к интерфейсу RAGAS."""
-
-        def __init__(self, model: EmbeddingModel) -> None:
-            super().__init__()
-            self.model = model
-
-        def embed_text(self, text: str, **kwargs: Any) -> list[float]:
-            del kwargs
-            return self.model.embed_query(text)
-
-        async def aembed_text(self, text: str, **kwargs: Any) -> list[float]:
-            import asyncio
-
-            del kwargs
-            return await asyncio.to_thread(self.model.embed_query, text)
-
-        def embed_texts(
-            self,
-            texts: list[str],
-            **kwargs: Any,
-        ) -> list[list[float]]:
-            del kwargs
-            return self.model.embed_documents(texts)
-
-        async def aembed_texts(
-            self,
-            texts: list[str],
-            **kwargs: Any,
-        ) -> list[list[float]]:
-            import asyncio
-
-            del kwargs
-            return await asyncio.to_thread(self.model.embed_documents, texts)
-
-    evaluator_embeddings = ExistingEmbeddingAdapter(embedding_model)
-
-    return {
+    scorers: dict[str, Any] = {
         "faithfulness": Faithfulness(llm=judge),
-        "context_precision": ContextPrecision(llm=judge),
         "context_recall": ContextRecall(llm=judge),
-        "answer_relevancy": AnswerRelevancy(
-            llm=judge,
-            embeddings=evaluator_embeddings,
-        ),
+        "answer_accuracy": AnswerAccuracy(llm=judge),
+        "context_precision": ContextPrecision(llm=judge),
     }
+    if include_answer_relevancy:
+        if embedding_model is None:
+            from rag_app.embeddings import EmbeddingModel
+
+            embedding_model = EmbeddingModel(
+                settings.embedding_model,
+                batch_size=settings.embedding_batch_size,
+                trust_remote_code=settings.trust_remote_code,
+            )
+
+        class ExistingEmbeddingAdapter(BaseRagasEmbedding):
+            """Адаптировать embedding-модель проекта к интерфейсу RAGAS."""
+
+            def __init__(self, model: EmbeddingModel) -> None:
+                super().__init__()
+                self.model = model
+
+            def embed_text(self, text: str, **kwargs: Any) -> list[float]:
+                del kwargs
+                return self.model.embed_query(text)
+
+            async def aembed_text(self, text: str, **kwargs: Any) -> list[float]:
+                import asyncio
+
+                del kwargs
+                return await asyncio.to_thread(self.model.embed_query, text)
+
+            def embed_texts(
+                self,
+                texts: list[str],
+                **kwargs: Any,
+            ) -> list[list[float]]:
+                del kwargs
+                return self.model.embed_documents(texts)
+
+            async def aembed_texts(
+                self,
+                texts: list[str],
+                **kwargs: Any,
+            ) -> list[list[float]]:
+                import asyncio
+
+                del kwargs
+                return await asyncio.to_thread(self.model.embed_documents, texts)
+
+        scorers["answer_relevancy"] = AnswerRelevancy(
+            llm=judge,
+            embeddings=ExistingEmbeddingAdapter(embedding_model),
+        )
+    return scorers
 
 
 def _build_vllm_async_client(settings: Settings) -> Any:
@@ -166,8 +169,9 @@ def evaluate_with_ragas(
     *,
     threshold: float | None = None,
     scorers: dict[str, Any] | None = None,
+    include_answer_relevancy: bool = True,
 ) -> list[RagasEvaluationResult]:
-    """Получить ответы RAG и последовательно оценить их четырьмя метриками."""
+    """Получить ответы RAG и оценить обязательными и диагностическими метриками."""
     samples = collect_rag_samples(service, cases)
     return evaluate_samples_with_ragas(
         samples,
@@ -175,6 +179,7 @@ def evaluate_with_ragas(
         threshold=threshold,
         scorers=scorers,
         embedding_model=service.embedding_model if scorers is None else None,
+        include_answer_relevancy=include_answer_relevancy,
     )
 
 
@@ -185,17 +190,31 @@ def evaluate_samples_with_ragas(
     threshold: float | None = None,
     scorers: dict[str, Any] | None = None,
     embedding_model: EmbeddingModel | None = None,
+    include_answer_relevancy: bool = True,
 ) -> list[RagasEvaluationResult]:
     """Оценить заранее сохранённые ответы и контексты, не вызывая RAG повторно."""
     resolved_threshold = settings.ragas_threshold if threshold is None else threshold
     if not 0 <= resolved_threshold <= 1:
         raise ValueError("Порог RAGAS должен находиться в диапазоне от 0 до 1")
-    active_scorers = scorers or build_ragas_scorers(settings, embedding_model)
-    missing_metrics = set(METRIC_NAMES) - set(active_scorers)
+    active_scorers = scorers or build_ragas_scorers(
+        settings,
+        embedding_model,
+        include_answer_relevancy=include_answer_relevancy,
+    )
+    missing_metrics = set(REQUIRED_JUDGE_METRICS) - set(active_scorers)
     if missing_metrics:
         raise ValueError(
             "Не созданы обязательные RAGAS-метрики: " + ", ".join(sorted(missing_metrics))
         )
+    enabled_metric_names = tuple(
+        metric_name
+        for metric_name in METRIC_NAMES
+        if metric_name in active_scorers
+        and (metric_name != "answer_relevancy" or include_answer_relevancy)
+    )
+    skipped_metric_names = tuple(
+        metric_name for metric_name in METRIC_NAMES if metric_name not in enabled_metric_names
+    )
 
     results: list[RagasEvaluationResult] = []
     for sample in samples:
@@ -219,16 +238,23 @@ def evaluate_samples_with_ragas(
                 "reference": sample.reference,
                 "retrieved_contexts": list(sample.retrieved_contexts),
             },
+            "answer_accuracy": {
+                "user_input": sample.question,
+                "response": sample.response,
+                "reference": sample.reference,
+            },
             "answer_relevancy": {
                 "user_input": sample.question,
                 "response": sample.response,
             },
         }
 
-        scores: dict[str, float] = {}
+        scores: dict[str, float | None] = {
+            metric_name: None for metric_name in METRIC_NAMES
+        }
         metric_errors: dict[str, str] = {}
         metric_reasons: dict[str, str] = {}
-        for metric_name in METRIC_NAMES:
+        for metric_name in enabled_metric_names:
             try:
                 metric_result = active_scorers[metric_name].score(
                     **metric_arguments[metric_name]
@@ -245,11 +271,23 @@ def evaluate_samples_with_ragas(
                 # Ошибка одной метрики не скрывает оценки, полученные от остальных.
                 metric_errors[metric_name] = f"{type(error).__name__}: {error}"
 
-        mean_score = sum(scores.values()) / len(scores) if scores else None
+        required_scores = [
+            scores[metric_name]
+            for metric_name in REQUIRED_JUDGE_METRICS
+            if scores[metric_name] is not None
+        ]
+        mean_score = (
+            sum(float(score) for score in required_scores) / len(required_scores)
+            if required_scores
+            else None
+        )
         passed = (
-            not metric_errors
-            and len(scores) == len(METRIC_NAMES)
-            and all(score >= resolved_threshold for score in scores.values())
+            not any(name in metric_errors for name in REQUIRED_JUDGE_METRICS)
+            and all(
+                scores[name] is not None
+                and float(scores[name]) >= resolved_threshold
+                for name in REQUIRED_JUDGE_METRICS
+            )
         )
         results.append(
             RagasEvaluationResult(
@@ -263,6 +301,7 @@ def evaluate_samples_with_ragas(
                 passed=passed,
                 metric_errors=metric_errors,
                 metric_reasons=metric_reasons,
+                skipped_metrics=skipped_metric_names,
             )
         )
 
@@ -280,9 +319,11 @@ def summarize_ragas(
         values = [
             result.scores[metric_name]
             for result in results
-            if metric_name in result.scores
+            if result.scores.get(metric_name) is not None
         ]
-        metric_averages[metric_name] = sum(values) / len(values) if values else None
+        metric_averages[metric_name] = (
+            sum(float(value) for value in values) / len(values) if values else None
+        )
 
     mean_values = [
         result.mean_score
@@ -295,6 +336,8 @@ def summarize_ragas(
         "failed": len(results) - passed,
         "pass_rate": passed / len(results) if results else 0.0,
         "threshold": threshold,
+        "required_metrics": list(REQUIRED_JUDGE_METRICS),
+        "optional_metrics": list(OPTIONAL_JUDGE_METRICS),
         "mean_score": sum(mean_values) / len(mean_values) if mean_values else None,
         "metrics": metric_averages,
     }
@@ -334,10 +377,11 @@ def _failed_result(
         response="",
         retrieved_contexts=(),
         sources=(),
-        scores={},
+        scores={metric_name: None for metric_name in METRIC_NAMES},
         mean_score=None,
         passed=False,
         metric_errors={},
         metric_reasons={},
+        skipped_metrics=METRIC_NAMES,
         error=error,
     )

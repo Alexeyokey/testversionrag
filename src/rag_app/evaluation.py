@@ -9,6 +9,20 @@ if TYPE_CHECKING:
     from rag_app.service import RagService
 
 
+# Обязательные метрики определяют passed и основной mean_score. Необязательные
+# остаются диагностическими и не должны отклонять корректный ответ сами по себе.
+REQUIRED_JUDGE_METRICS = (
+    "faithfulness",
+    "context_recall",
+    "answer_accuracy",
+)
+OPTIONAL_JUDGE_METRICS = (
+    "context_precision",
+    "answer_relevancy",
+)
+JUDGE_METRICS = REQUIRED_JUDGE_METRICS + OPTIONAL_JUDGE_METRICS
+
+
 @dataclass(frozen=True, slots=True)
 class EvaluationCase:
     """Один вопрос и простые условия, которым должен соответствовать результат."""

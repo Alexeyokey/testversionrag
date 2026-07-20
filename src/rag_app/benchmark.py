@@ -7,13 +7,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from rag_app.deepeval_evaluation import (
-    METRIC_NAMES,
     DeepEvalEvaluationResult,
     build_deepeval_scorers,
     evaluate_samples_with_deepeval,
     summarize_deepeval,
 )
-from rag_app.evaluation import EvaluationCase, RagEvaluationSample, collect_rag_samples
+from rag_app.evaluation import (
+    JUDGE_METRICS,
+    REQUIRED_JUDGE_METRICS,
+    EvaluationCase,
+    RagEvaluationSample,
+    collect_rag_samples,
+)
 from rag_app.ragas_evaluation import (
     RagasEvaluationResult,
     build_ragas_scorers,
@@ -24,6 +29,9 @@ from rag_app.ragas_evaluation import (
 if TYPE_CHECKING:
     from rag_app.config import Settings
     from rag_app.service import RagService
+
+
+METRIC_NAMES = JUDGE_METRICS
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +101,7 @@ def run_benchmark(
     deepeval_scorers: dict[str, Any] | None = None,
     test_case_factory: Callable[..., Any] | None = None,
     progress: Callable[[str], None] | None = None,
+    include_answer_relevancy: bool = True,
 ) -> list[BenchmarkConfigurationResult]:
     """Прогнать четыре RAG-конфигурации и оценить одни ответы двумя инструментами."""
     if len(configurations) < 4:
@@ -121,10 +130,12 @@ def run_benchmark(
     active_ragas_scorers = ragas_scorers or build_ragas_scorers(
         settings,
         shared_embedding_model,
+        include_answer_relevancy=include_answer_relevancy,
     )
     active_deepeval_scorers = deepeval_scorers or build_deepeval_scorers(
         settings,
         threshold=resolved_threshold,
+        include_answer_relevancy=include_answer_relevancy,
     )
 
     benchmark_results: list[BenchmarkConfigurationResult] = []
@@ -148,6 +159,7 @@ def run_benchmark(
             settings,
             threshold=resolved_threshold,
             scorers=active_ragas_scorers,
+            include_answer_relevancy=include_answer_relevancy,
         )
         if progress:
             progress(f"[{configuration.name}] оценка DeepEval...")
@@ -157,6 +169,7 @@ def run_benchmark(
             threshold=resolved_threshold,
             scorers=active_deepeval_scorers,
             test_case_factory=test_case_factory,
+            include_answer_relevancy=include_answer_relevancy,
         )
         benchmark_results.append(
             BenchmarkConfigurationResult(
@@ -200,7 +213,7 @@ def comparison_rows(
         available_scores = [
             float(row[f"{tool_name}_{metric_name}"])
             for tool_name in ("ragas", "deepeval")
-            for metric_name in METRIC_NAMES
+            for metric_name in REQUIRED_JUDGE_METRICS
             if row[f"{tool_name}_{metric_name}"] is not None
         ]
         row["combined_mean"] = (
@@ -265,6 +278,7 @@ def _markdown_report(rows: list[dict[str, Any]]) -> str:
         "faithfulness": "Faithfulness",
         "context_precision": "Context Precision",
         "context_recall": "Context Recall",
+        "answer_accuracy": "Answer Accuracy",
         "answer_relevancy": "Answer Relevancy",
     }
     headers = ["Конфигурация"] + [
@@ -282,10 +296,27 @@ def _markdown_report(rows: list[dict[str, Any]]) -> str:
         "",
         "## Метрики",
         "",
-        "- **Faithfulness** — какая доля утверждений ответа подтверждается найденным контекстом; важна для контроля галлюцинаций генератора.",
-        "- **Context Precision** — насколько высоко ранжируются полезные чанки; важна при настройке top-k и reranker.",
-        "- **Context Recall** — хватает ли найденного контекста для полного эталонного ответа; важна для диагностики пропусков retrieval.",
-        "- **Answer Relevancy** — отвечает ли результат непосредственно на вопрос без ухода в сторону; важна для качества промпта и генератора.",
+        (
+            "- **Faithfulness** — какая доля утверждений ответа подтверждается "
+            "найденным контекстом; важна для контроля галлюцинаций генератора."
+        ),
+        (
+            "- **Context Precision** — насколько высоко ранжируются полезные чанки; "
+            "важна при настройке top-k и reranker."
+        ),
+        (
+            "- **Context Recall** — хватает ли найденного контекста для полного "
+            "эталонного ответа; важна для диагностики пропусков retrieval."
+        ),
+        (
+            "- **Answer Accuracy** — совпадает ли ответ с эталоном по фактам и "
+            "полноте; обязательна для прохождения проверки."
+        ),
+        (
+            "- **Context Precision** и **Answer Relevancy** — диагностические "
+            "метрики: отображаются в отчёте, но не определяют passed и основное "
+            "среднее."
+        ),
         "",
         "## Сводная таблица",
         "",
@@ -307,7 +338,7 @@ def _markdown_report(rows: list[dict[str, Any]]) -> str:
     if valid_rows:
         best = max(valid_rows, key=lambda row: float(row["combined_mean"]))
         lines.append(
-            f"Лучшая конфигурация по среднему восьми оценок — "
+            f"Лучшая конфигурация по среднему обязательных оценок — "
             f"**{best['configuration']}** ({float(best['combined_mean']):.3f})."
         )
     else:
@@ -318,9 +349,20 @@ def _markdown_report(rows: list[dict[str, Any]]) -> str:
     lines.extend(
         [
             "",
-            "- **RAGAS** удобнее для исследовательских экспериментов, работы с датасетами и компактного расчёта классических RAG-метрик.",
-            "- **DeepEval** удобнее для pytest/CI, пороговых regression-тестов и диагностики: его нативные метрики сохраняют текстовые причины judge-модели.",
-            "- Для выбора RAG-конфигурации ориентируйтесь на согласованный рост метрик обеих библиотек, а расхождения проверяйте по причинам и подробным результатам каждого вопроса.",
+            (
+                "- **RAGAS** удобнее для исследовательских экспериментов, работы с "
+                "датасетами и компактного расчёта классических RAG-метрик."
+            ),
+            (
+                "- **DeepEval** удобнее для pytest/CI, пороговых regression-тестов "
+                "и диагностики: его нативные метрики сохраняют текстовые причины "
+                "judge-модели."
+            ),
+            (
+                "- Для выбора RAG-конфигурации ориентируйтесь на согласованный рост "
+                "метрик обеих библиотек, а расхождения проверяйте по причинам и "
+                "подробным результатам каждого вопроса."
+            ),
             "",
         ]
     )
