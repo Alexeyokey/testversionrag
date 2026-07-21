@@ -26,8 +26,6 @@ services:
       - ${RAG_VLLM_GPU_MEMORY_UTILIZATION:-0.9}
       - --tensor-parallel-size
       - ${RAG_VLLM_TENSOR_PARALLEL_SIZE:-1}
-      - --swap-space
-      - ${RAG_VLLM_SWAP_SPACE_GIB:-16}
       - --reasoning-parser
       - qwen3
       - --trust-remote-code

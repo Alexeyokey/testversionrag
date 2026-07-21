@@ -72,7 +72,6 @@ RAG_VLLM_MAX_NUM_SEQS=4
 RAG_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE=4
 RAG_VLLM_GPU_MEMORY_UTILIZATION=0.9
 RAG_VLLM_TENSOR_PARALLEL_SIZE=1
-RAG_VLLM_SWAP_SPACE_GIB=16
 ```
 
 Имя в `RAG_GENERATION_MODEL` должно совпадать с именем модели, опубликованным сервером.
@@ -166,7 +165,6 @@ docker compose run --rm -it app chat --stream
 - `RAG_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE` — максимальный batch для CUDA Graph capture;
 - `RAG_VLLM_GPU_MEMORY_UTILIZATION` — доля памяти GPU для vLLM (по умолчанию 0.9);
 - `RAG_VLLM_TENSOR_PARALLEL_SIZE` — число GPU для tensor parallel (по умолчанию 1);
-- `RAG_VLLM_SWAP_SPACE_GIB` — CPU swap на одну GPU в GiB (по умолчанию 16);
 - `RAG_MAX_NEW_TOKENS` — предел длины ответа;
 - `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP` — разбиение документов;
 - `RAG_DOCLING_CHUNK_TOKENS` — токеновый лимит чанков PDF/DOCX/ODT/XLSX;
