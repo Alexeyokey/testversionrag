@@ -28,6 +28,10 @@ services:
       - ${RAG_VLLM_TENSOR_PARALLEL_SIZE:-1}
       - --reasoning-parser
       - qwen3
+      # Отключаем thinking на уровне сервера. Значение из конкретного запроса
+      # всё ещё может переопределить этот безопасный для RAGAS режим по умолчанию.
+      - --default-chat-template-kwargs
+      - '{"enable_thinking":false}'
       - --trust-remote-code
     environment:
       HF_TOKEN: ${HF_TOKEN:-}

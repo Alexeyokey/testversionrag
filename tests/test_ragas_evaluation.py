@@ -355,6 +355,37 @@ def test_ragas_optional_metrics_do_not_fail_case() -> None:
     assert result.mean_score == 0.9
 
 
+def test_ragas_does_not_report_partial_required_mean_as_success() -> None:
+    class _FailingScorer:
+        def score(self, **kwargs):
+            del kwargs
+            raise RuntimeError("judge output was truncated")
+
+    scorers = {
+        "faithfulness": _FailingScorer(),
+        "context_recall": _FailingScorer(),
+        "answer_accuracy": _Scorer(1.0),
+        "context_precision": _Scorer(1.0),
+        "answer_relevancy": _Scorer(1.0),
+    }
+
+    result = evaluate_with_ragas(
+        _Service(),
+        [
+            EvaluationCase(
+                question="Когда заключён договор?",
+                reference="Договор заключён 15 марта 2025 года.",
+            )
+        ],
+        Settings(enable_reranker=False),
+        scorers=scorers,
+    )[0]
+
+    assert result.mean_score is None
+    assert result.passed is False
+    assert result.scores["answer_accuracy"] == 1.0
+
+
 def test_ragas_can_skip_answer_relevancy() -> None:
     scorers = {
         "faithfulness": _Scorer(0.9),

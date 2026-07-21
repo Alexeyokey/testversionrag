@@ -674,14 +674,10 @@ def evaluate_samples_with_ragas(
                         if artifact.cache_hits > cache_hits_before:
                             cached_artifacts.append(artifact.artifact_name)
 
-        required_scores = [
-            scores[metric_name]
-            for metric_name in REQUIRED_JUDGE_METRICS
-            if scores[metric_name] is not None
-        ]
+        required_scores = [scores[name] for name in REQUIRED_JUDGE_METRICS]
         mean_score = (
             sum(float(score) for score in required_scores) / len(required_scores)
-            if required_scores
+            if all(score is not None for score in required_scores)
             else None
         )
         passed = (
@@ -764,6 +760,8 @@ def write_ragas_report(
         "judge": {
             "model": settings.ragas_judge_model or settings.generation_model,
             "base_url": settings.vllm_base_url,
+            "max_tokens": settings.ragas_max_tokens,
+            "thinking": False,
         },
         "summary": summarize_ragas(results, threshold),
         "results": [asdict(result) for result in results],

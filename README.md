@@ -226,6 +226,12 @@ RAGAS использует тот же OpenAI-compatible endpoint и по умо
 `context_precision` и `answer_relevancy` остаются диагностическими и не проваливают
 тест при низком значении.
 
+Для judge thinking отключён дважды: параметром каждого запроса RAGAS и серверным
+`--default-chat-template-kwargs '{"enable_thinking":false}'`. Серверное значение
+защищает от переполнения `RAGAS_MAX_TOKENS`, если библиотека structured output не
+пробросит параметр конкретного запроса. Запрос при необходимости может явно
+переопределить серверное значение.
+
 ```powershell
 rag evaluate-ragas evaluation\testset.example.jsonl `
   --threshold 0.7 `
