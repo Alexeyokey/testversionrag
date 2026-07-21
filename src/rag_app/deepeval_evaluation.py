@@ -211,6 +211,7 @@ def evaluate_samples_with_deepeval(
     test_case_factory: Callable[..., Any] | None = None,
     include_answer_relevancy: bool = True,
     include_context_precision: bool = True,
+    progress: Callable[[str], None] | None = None,
 ) -> list[DeepEvalEvaluationResult]:
     """Оценить ответы обязательными и диагностическими метриками DeepEval."""
     # Итоговые LLM-as-a-judge оценки намеренно не кэшируются: каждый запуск
@@ -252,7 +253,10 @@ def evaluate_samples_with_deepeval(
         test_case_factory = LLMTestCase
 
     results: list[DeepEvalEvaluationResult] = []
-    for sample in samples:
+    total = len(samples)
+    for index, sample in enumerate(samples, start=1):
+        if progress:
+            progress(f"[DeepEval {index}/{total}] Вопрос: {sample.question}")
         if sample.error:
             results.append(_failed_result(sample, sample.error))
             continue
@@ -269,6 +273,8 @@ def evaluate_samples_with_deepeval(
         metric_errors: dict[str, str] = {}
         metric_reasons: dict[str, str] = {}
         for metric_name in enabled_metric_names:
+            if progress:
+                progress(f"[DeepEval {index}/{total}] Метрика: {metric_name}")
             metric = active_scorers[metric_name]
             try:
                 measured = metric.measure(test_case)

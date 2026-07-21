@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from rag_app.service import RagService
@@ -127,10 +127,18 @@ def load_cases(path: str | Path) -> list[EvaluationCase]:
     return cases
 
 
-def evaluate(service: RagService, cases: list[EvaluationCase]) -> list[EvaluationResult]:
+def evaluate(
+    service: RagService,
+    cases: list[EvaluationCase],
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> list[EvaluationResult]:
     """Задать все вопросы сервису и проверить ответ, контекст и источники."""
     results: list[EvaluationResult] = []
-    for case in cases:
+    total = len(cases)
+    for index, case in enumerate(cases, start=1):
+        if progress:
+            progress(f"[RAG {index}/{total}] Вопрос: {case.question}")
         try:
             answer, documents = service.ask(case.question)
             context = "\n".join(document.page_content for document in documents)
@@ -184,10 +192,15 @@ def evaluate(service: RagService, cases: list[EvaluationCase]) -> list[Evaluatio
 def collect_rag_samples(
     service: RagService,
     cases: list[EvaluationCase],
+    *,
+    progress: Callable[[str], None] | None = None,
 ) -> list[RagEvaluationSample]:
     """Один раз получить ответы и контексты, чтобы evaluator-ы сравнивали одинаковые данные."""
     samples: list[RagEvaluationSample] = []
-    for case in cases:
+    total = len(cases)
+    for index, case in enumerate(cases, start=1):
+        if progress:
+            progress(f"[RAG {index}/{total}] Вопрос: {case.question}")
         if not case.reference:
             samples.append(
                 RagEvaluationSample(

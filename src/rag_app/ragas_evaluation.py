@@ -535,9 +535,10 @@ def evaluate_with_ragas(
     include_context_precision: bool = True,
     artifact_cache: ArtifactCache | None = None,
     refresh_artifact_cache: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> list[RagasEvaluationResult]:
     """Получить ответы RAG и оценить обязательными и диагностическими метриками."""
-    samples = collect_rag_samples(service, cases)
+    samples = collect_rag_samples(service, cases, progress=progress)
     return evaluate_samples_with_ragas(
         samples,
         settings,
@@ -548,6 +549,7 @@ def evaluate_with_ragas(
         include_context_precision=include_context_precision,
         artifact_cache=artifact_cache,
         refresh_artifact_cache=refresh_artifact_cache,
+        progress=progress,
     )
 
 
@@ -562,6 +564,7 @@ def evaluate_samples_with_ragas(
     include_context_precision: bool = True,
     artifact_cache: ArtifactCache | None = None,
     refresh_artifact_cache: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> list[RagasEvaluationResult]:
     """Оценить заранее сохранённые ответы и контексты, не вызывая RAG повторно."""
     resolved_threshold = settings.ragas_threshold if threshold is None else threshold
@@ -591,7 +594,10 @@ def evaluate_samples_with_ragas(
         metric_name for metric_name in METRIC_NAMES if metric_name not in enabled_metric_names
     )
     results: list[RagasEvaluationResult] = []
-    for sample in samples:
+    total = len(samples)
+    for index, sample in enumerate(samples, start=1):
+        if progress:
+            progress(f"[RAGAS {index}/{total}] Вопрос: {sample.question}")
         if sample.error:
             results.append(_failed_result(sample, sample.error))
             continue
@@ -631,6 +637,8 @@ def evaluate_samples_with_ragas(
         artifacts: dict[str, Any] = {}
         cached_artifacts: list[str] = []
         for metric_name in enabled_metric_names:
+            if progress:
+                progress(f"[RAGAS {index}/{total}] Метрика: {metric_name}")
             scorer = active_scorers[metric_name]
             artifact = _artifact_controller(scorer)
             cache_hits_before = artifact.cache_hits if artifact else 0

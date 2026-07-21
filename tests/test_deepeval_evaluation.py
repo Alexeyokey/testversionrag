@@ -61,6 +61,38 @@ def test_deepeval_scores_precomputed_sample_without_calling_rag() -> None:
     ]
 
 
+def test_deepeval_reports_current_question_and_metric() -> None:
+    messages: list[str] = []
+    scorers = {
+        name: _Metric(1.0)
+        for name in (
+            "faithfulness",
+            "context_recall",
+            "answer_accuracy",
+            "context_precision",
+            "answer_relevancy",
+        )
+    }
+    sample = RagEvaluationSample(
+        question="Какой вопрос?",
+        reference="Ответ",
+        response="Ответ",
+        retrieved_contexts=("Ответ",),
+        sources=("source.md",),
+    )
+
+    evaluate_samples_with_deepeval(
+        [sample],
+        Settings(enable_reranker=False),
+        scorers=scorers,
+        test_case_factory=_case_factory,
+        progress=messages.append,
+    )
+
+    assert messages[0] == "[DeepEval 1/1] Вопрос: Какой вопрос?"
+    assert "[DeepEval 1/1] Метрика: answer_accuracy" in messages
+
+
 def test_deepeval_optional_metrics_do_not_fail_and_relevancy_can_be_skipped() -> None:
     scorers = {
         "faithfulness": _Metric(0.9),

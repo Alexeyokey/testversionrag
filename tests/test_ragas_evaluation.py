@@ -45,6 +45,32 @@ class _Scorer:
         return SimpleNamespace(value=self.value)
 
 
+def test_ragas_reports_current_question_and_metric() -> None:
+    messages: list[str] = []
+    scorers = {
+        name: _Scorer(1.0)
+        for name in (
+            "faithfulness",
+            "context_recall",
+            "answer_accuracy",
+            "context_precision",
+            "answer_relevancy",
+        )
+    }
+
+    evaluate_with_ragas(
+        _Service(),
+        [EvaluationCase(question="Когда договор?", reference="15 марта")],
+        Settings(enable_reranker=False),
+        scorers=scorers,
+        progress=messages.append,
+    )
+
+    assert messages[0] == "[RAG 1/1] Вопрос: Когда договор?"
+    assert messages[1] == "[RAGAS 1/1] Вопрос: Когда договор?"
+    assert "[RAGAS 1/1] Метрика: faithfulness" in messages
+
+
 class _AsyncContextPrecisionScorer:
     def __init__(self) -> None:
         self.active = 0

@@ -34,6 +34,7 @@ class _DeepEvalMetric:
 
 def test_benchmark_runs_rag_once_per_configuration_and_question(tmp_path) -> None:
     rag_calls: list[tuple[str, str]] = []
+    progress_messages: list[str] = []
     metric_names = (
         "faithfulness",
         "context_recall",
@@ -49,6 +50,7 @@ def test_benchmark_runs_rag_once_per_configuration_and_question(tmp_path) -> Non
         ragas_scorers={name: _RagasMetric() for name in metric_names},
         deepeval_scorers={name: _DeepEvalMetric() for name in metric_names},
         test_case_factory=lambda **kwargs: SimpleNamespace(**kwargs),
+        progress=progress_messages.append,
     )
     rows = comparison_rows(results)
 
@@ -64,6 +66,9 @@ def test_benchmark_runs_rag_once_per_configuration_and_question(tmp_path) -> Non
     assert rows[0]["ragas_answer_accuracy"] == 0.8
     assert rows[0]["deepeval_answer_relevancy"] == 0.8
     assert abs(rows[0]["combined_mean"] - 0.8) < 1e-12
+    assert "[vector_only] [RAG 1/1] Вопрос: Вопрос" in progress_messages
+    assert "[vector_only] [RAGAS 1/1] Вопрос: Вопрос" in progress_messages
+    assert "[vector_only] [DeepEval 1/1] Вопрос: Вопрос" in progress_messages
 
     reports = write_benchmark_reports(
         tmp_path,

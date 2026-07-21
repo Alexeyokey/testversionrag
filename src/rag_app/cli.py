@@ -274,7 +274,7 @@ def main() -> None:
                 if args.limit <= 0:
                     raise ValueError("--limit должен быть больше нуля")
                 cases = cases[: args.limit]
-            results = evaluate(service, cases)
+            results = evaluate(service, cases, progress=print)
             summary = summarize(results)
             report_path = write_report(args.output, results)
             print(
@@ -312,6 +312,7 @@ def main() -> None:
                 include_context_precision=not args.skip_context_precision,
                 artifact_cache=artifact_cache,
                 refresh_artifact_cache=args.refresh_artifact_cache,
+                progress=print,
             )
             summary = summarize_ragas(results, threshold)
             report_path = write_ragas_report(

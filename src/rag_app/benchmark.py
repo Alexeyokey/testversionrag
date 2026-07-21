@@ -148,6 +148,15 @@ def run_benchmark(
 
     benchmark_results: list[BenchmarkConfigurationResult] = []
     for configuration in configurations:
+        question_progress: Callable[[str], None] | None = None
+        if progress:
+            def report_question_progress(
+                message: str,
+                name: str = configuration.name,
+            ) -> None:
+                progress(f"[{name}] {message}")
+
+            question_progress = report_question_progress
         if progress:
             progress(f"[{configuration.name}] генерация RAG-ответов...")
         config_settings = replace(
@@ -159,7 +168,11 @@ def run_benchmark(
             candidate_k=configuration.candidate_k,
         )
         service = service_factory(config_settings)
-        samples = collect_rag_samples(service, cases)
+        samples = collect_rag_samples(
+            service,
+            cases,
+            progress=question_progress,
+        )
         if progress:
             progress(f"[{configuration.name}] оценка RAGAS...")
         ragas_results = evaluate_samples_with_ragas(
@@ -171,6 +184,7 @@ def run_benchmark(
             include_context_precision=include_context_precision,
             artifact_cache=artifact_cache,
             refresh_artifact_cache=refresh_artifact_cache,
+            progress=question_progress,
         )
         if progress:
             progress(f"[{configuration.name}] оценка DeepEval...")
@@ -182,6 +196,7 @@ def run_benchmark(
             test_case_factory=test_case_factory,
             include_answer_relevancy=include_answer_relevancy,
             include_context_precision=include_context_precision,
+            progress=question_progress,
         )
         benchmark_results.append(
             BenchmarkConfigurationResult(

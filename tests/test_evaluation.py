@@ -2,7 +2,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from rag_app.evaluation import evaluate, load_cases, summarize, write_report
+from rag_app.evaluation import EvaluationCase, evaluate, load_cases, summarize, write_report
 
 
 @dataclass
@@ -79,3 +79,12 @@ def test_evaluate_separates_answer_context_and_source_checks(tmp_path: Path) -> 
     assert summary["passed"] == 1
     assert summary["failed"] == 1
     assert json.loads(report_path.read_text(encoding="utf-8"))["summary"]["total"] == 2
+
+
+def test_evaluate_reports_current_question() -> None:
+    messages: list[str] = []
+    cases = [EvaluationCase(question="Какой сейчас вопрос?")]
+
+    evaluate(_Service(), cases[:1], progress=messages.append)
+
+    assert messages == ["[RAG 1/1] Вопрос: Какой сейчас вопрос?"]
