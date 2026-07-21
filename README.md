@@ -24,6 +24,7 @@ rag_project/
 ├── data/                # локальные документы, не коммитятся
 ├── pyproject.toml
 ├── Dockerfile
+├── Dockerfile.vllm      # vLLM 0.19.0 + Transformers 5.5.4
 └── compose.yaml
 ```
 
@@ -37,15 +38,22 @@ rag_project/
 
 ```powershell
 Copy-Item .env.example .env
+docker compose build app vllm
 docker compose up -d qdrant vllm
 docker compose logs -f vllm
 ```
 
-Первый запуск скачает модель из `RAG_GENERATION_MODEL`. Когда в логах vLLM появится
-сообщение о готовности сервера, проиндексируйте документы и задайте вопрос:
+Тестовый профиль использует `QuantTrio/Qwen3.6-27B-AWQ`, vLLM 0.19.0 и
+Transformers 5.5.4. Первый запуск скачает около 21 GiB файлов модели. Когда контейнер
+станет healthy, проверьте версию, опубликованную модель и короткую генерацию:
 
 ```powershell
-docker compose build app
+docker compose run --rm app check-vllm
+```
+
+После успешной проверки проиндексируйте документы и задайте вопрос:
+
+```powershell
 docker compose run --rm app index /data --recreate
 docker compose run --rm app ask "Когда заключён договор?"
 docker compose run --rm -it app chat --stream
@@ -55,18 +63,33 @@ docker compose run --rm -it app chat --stream
 локальный или удалённый vLLM, не запускайте сервис `vllm` и задайте адрес API:
 
 ```dotenv
-RAG_GENERATION_MODEL=QuantTrio/Qwen3.5-9B-AWQ
+RAG_GENERATION_MODEL=QuantTrio/Qwen3.6-27B-AWQ
 RAG_VLLM_BASE_URL=http://localhost:8000/v1
 RAG_VLLM_API_KEY=
 RAG_VLLM_TIMEOUT=120
 RAG_VLLM_MAX_MODEL_LEN=8192
-RAG_VLLM_MAX_NUM_SEQS=8
-RAG_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE=8
-RAG_VLLM_GPU_MEMORY_UTILIZATION=0.6
+RAG_VLLM_MAX_NUM_SEQS=4
+RAG_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE=4
+RAG_VLLM_GPU_MEMORY_UTILIZATION=0.9
+RAG_VLLM_TENSOR_PARALLEL_SIZE=1
+RAG_VLLM_SWAP_SPACE_GIB=16
 ```
 
 Имя в `RAG_GENERATION_MODEL` должно совпадать с именем модели, опубликованным сервером.
 Если сервер запущен с `--served-model-name`, укажите именно это имя.
+
+### vLLM без Docker
+
+GPU-сервер устанавливайте в отдельное чистое окружение Python 3.12, чтобы его
+CUDA/PyTorch-зависимости не смешивались с приложением:
+
+```bash
+python3.12 -m venv .venv-vllm
+source .venv-vllm/bin/activate
+python -m pip install -r requirements-vllm.txt
+```
+
+`requirements-vllm.txt` фиксирует `vllm==0.19.0` и `transformers==5.5.4`.
 
 ## Локальный запуск CLI
 
@@ -118,11 +141,17 @@ docker compose run --rm -it app chat --stream
 Флаг `--no-warmup` откладывает их первую загрузку до первого вопроса. Qwen работает
 в отдельном постоянно запущенном контейнере `vllm` и между вопросами не перезапускается.
 
-Compose использует закреплённый образ `vllm/vllm-openai:v0.17.1`, поддерживающий
-`QuantTrio/Qwen3.5-9B-AWQ`. Модель передаётся `vllm serve` позиционным аргументом.
-Так как приложение отправляет только текст, `--language-model-only` отключает загрузку
-визуального encoder и освобождает память под cache. Размер CUDA Graph ограничен восемью
-последовательностями для устойчивого запуска при `gpu-memory-utilization=0.6`.
+`Dockerfile.vllm` основан на `vllm/vllm-openai:v0.19.0`, устанавливает
+`transformers==5.5.4` и во время сборки проверяет обе версии. Модель передаётся
+`vllm serve` позиционным аргументом. Так как приложение отправляет только текст,
+`--language-model-only` не загружает визуальный encoder. Тестовый профиль ограничивает
+контекст 8192 токенами и CUDA Graph четырьмя последовательностями.
+
+Файлы AWQ-модели занимают около 21 GiB, а при работе дополнительно нужна память для
+служебных буферов и KV cache. Поэтому одной 24-GiB GPU может не хватить даже при
+квантизации. Для нескольких GPU укажите их число, например
+`RAG_VLLM_TENSOR_PARALLEL_SIZE=2`; при нехватке памяти сначала уменьшайте
+`RAG_VLLM_MAX_MODEL_LEN` и `RAG_VLLM_MAX_NUM_SEQS`.
 
 ## Конфигурация
 
@@ -135,7 +164,9 @@ Compose использует закреплённый образ `vllm/vllm-open
 - `RAG_VLLM_MAX_MODEL_LEN` — размер контекста vLLM (по умолчанию 8192 токена);
 - `RAG_VLLM_MAX_NUM_SEQS` — максимум одновременно обрабатываемых последовательностей;
 - `RAG_VLLM_MAX_CUDAGRAPH_CAPTURE_SIZE` — максимальный batch для CUDA Graph capture;
-- `RAG_VLLM_GPU_MEMORY_UTILIZATION` — доля памяти GPU для vLLM (по умолчанию 0.6);
+- `RAG_VLLM_GPU_MEMORY_UTILIZATION` — доля памяти GPU для vLLM (по умолчанию 0.9);
+- `RAG_VLLM_TENSOR_PARALLEL_SIZE` — число GPU для tensor parallel (по умолчанию 1);
+- `RAG_VLLM_SWAP_SPACE_GIB` — CPU swap на одну GPU в GiB (по умолчанию 16);
 - `RAG_MAX_NEW_TOKENS` — предел длины ответа;
 - `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP` — разбиение документов;
 - `RAG_DOCLING_CHUNK_TOKENS` — токеновый лимит чанков PDF/DOCX/ODT/XLSX;
@@ -162,6 +193,7 @@ RTF обрабатывается встроенным декодером без 
 pytest
 ruff check .
 docker compose config
+docker compose run --rm app check-vllm
 ```
 
 ### Простая проверка качества RAG
