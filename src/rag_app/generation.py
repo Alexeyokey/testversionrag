@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Iterator
 from typing import Any
 
 import requests
@@ -34,7 +36,7 @@ class TextGenerator:
         max_new_tokens: int = 256,
         trust_remote_code: bool = True,
         base_url: str = "http://localhost:8000/v1",
-        temperature: float = 0.3,
+        temperature: float = 0.0,
         thinking: bool = False,
         api_key: str | None = None,
         timeout: float = 120.0,
@@ -50,39 +52,62 @@ class TextGenerator:
         self.api_key = api_key
         self.timeout = timeout
 
-    def answer(self, question: str, context: str, chat_history: str = "Предыдущий разговор отсутствует.", answer_language: str ="Русский") -> str:
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _payload(
+        self,
+        question: str,
+        context: str,
+        chat_history: str,
+        answer_language: str,
+        *,
+        stream: bool,
+    ) -> dict[str, Any]:
         human_content = HUMAN_TEMPLATE.format(
             context=context,
             question=question,
             answer_language=answer_language,
             chat_history=chat_history,
         )
-        payload: dict[str, Any] = {
+        return {
             "model": self.model_name,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": human_content},
             ],
             "max_tokens": self.max_new_tokens,
-            "chat_template_kwargs": {
-        "enable_thinking": self.thinking},
-            "temperature": self.temperature}
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+            "chat_template_kwargs": {"enable_thinking": self.thinking},
+            "temperature": self.temperature,
+            "stream": stream,
+        }
+
+    def answer(
+        self,
+        question: str,
+        context: str,
+        chat_history: str = "Предыдущий разговор отсутствует.",
+        answer_language: str = "язык вопроса",
+    ) -> str:
+        payload = self._payload(
+            question,
+            context,
+            chat_history,
+            answer_language,
+            stream=False,
+        )
 
         try:
             response = requests.post(
                 self.endpoint,
                 json=payload,
-                headers=headers,
+                headers=self._headers(),
                 timeout=self.timeout,
             )
-            if not response.ok:
-                raise RuntimeError(
-                    f"vLLM вернул HTTP {response.status_code}: {response.text}"
-                )
-
+            response.raise_for_status()
             body = response.json()
             content = body["choices"][0]["message"]["content"]
         except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as error:
@@ -93,3 +118,52 @@ class TextGenerator:
         if not isinstance(content, str):
             raise RuntimeError("vLLM вернул ответ в неожиданном формате")
         return content.strip()
+
+    def stream_answer(
+        self,
+        question: str,
+        context: str,
+        chat_history: str = "Предыдущий разговор отсутствует.",
+        answer_language: str = "язык вопроса",
+    ) -> Iterator[str]:
+        """Yield answer fragments from the vLLM SSE response."""
+        payload = self._payload(
+            question,
+            context,
+            chat_history,
+            answer_language,
+            stream=True,
+        )
+        response = None
+        try:
+            response = requests.post(
+                self.endpoint,
+                json=payload,
+                headers=self._headers(),
+                timeout=self.timeout,
+                stream=True,
+            )
+            response.raise_for_status()
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if not raw_line:
+                    continue
+                if isinstance(raw_line, bytes):
+                    raw_line = raw_line.decode("utf-8")
+                if not raw_line.startswith("data:"):
+                    continue
+
+                event_data = raw_line.removeprefix("data:").strip()
+                if event_data == "[DONE]":
+                    break
+
+                event = json.loads(event_data)
+                content = event["choices"][0].get("delta", {}).get("content")
+                if isinstance(content, str) and content:
+                    yield content
+        except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as error:
+            raise RuntimeError(
+                f"Не удалось получить потоковый ответ от vLLM по адресу {self.endpoint}: {error}"
+            ) from error
+        finally:
+            if response is not None:
+                response.close()

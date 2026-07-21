@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
+
 from langchain_core.documents import Document
 
 from rag_app.config import Settings
@@ -7,6 +10,9 @@ from rag_app.documents import DocumentProcessor
 from rag_app.embeddings import EmbeddingModel
 from rag_app.retrieval import HybridRetriever, format_documents
 from rag_app.vector_store import VectorStore
+
+if TYPE_CHECKING:
+    from rag_app.generation import TextGenerator
 
 
 class RagService:
@@ -21,6 +27,7 @@ class RagService:
         self._embedding_model = embedding_model
         self._reranker = None
         self._retriever: HybridRetriever | None = None
+        self._generator: TextGenerator | None = None
         self._store = VectorStore(
             url=settings.qdrant_url,
             collection_name=settings.collection_name,
@@ -47,6 +54,7 @@ class RagService:
             trust_remote_code=self.settings.trust_remote_code,
             tokenizer=embedding_model.tokenizer,
         )
+
         documents = processor.load(source)
         if not documents:
             raise ValueError("В источнике не найдено текста для индексации")
@@ -89,6 +97,26 @@ class RagService:
         self._retriever = None
         return len(documents)
 
+    @property
+    def generator(self) -> TextGenerator:
+        """Create the lightweight vLLM client once and reuse it for the session."""
+        if not self.settings.generation_model:
+            raise ValueError("Для генерации задайте RAG_GENERATION_MODEL")
+        if self._generator is None:
+            from rag_app.generation import TextGenerator
+
+            self._generator = TextGenerator(
+                self.settings.generation_model,
+                max_new_tokens=self.settings.max_new_tokens,
+                trust_remote_code=self.settings.trust_remote_code,
+                base_url=self.settings.vllm_base_url,
+                api_key=self.settings.vllm_api_key,
+                temperature=self.settings.temperature,
+                thinking=self.settings.thinking,
+                timeout=self.settings.vllm_timeout,
+            )
+        return self._generator
+
     def search(self, query: str) -> list[Document]:
         if self._retriever is None:
             documents = self._store.load_documents()
@@ -116,21 +144,49 @@ class RagService:
             )
         return self._retriever.retrieve(query)
 
-    def ask(self, question: str) -> tuple[str, list[Document]]:
-        if not self.settings.generation_model:
-            raise ValueError("Для команды ask задайте RAG_GENERATION_MODEL")
+    def ask(
+        self,
+        question: str,
+        *,
+        chat_history: str = "Предыдущий разговор отсутствует.",
+    ) -> tuple[str, list[Document]]:
         documents = self.search(question)
-        from rag_app.generation import TextGenerator
-
-        generator = TextGenerator(
-            self.settings.generation_model,
-            max_new_tokens=self.settings.max_new_tokens,
-            trust_remote_code=self.settings.trust_remote_code,
-            base_url=self.settings.vllm_base_url,
-            api_key=self.settings.vllm_api_key,
-            temperature=self.settings.temperature,
-            thinking=self.settings.thinking,
-            timeout=self.settings.vllm_timeout,
+        answer = self.generator.answer(
+            question,
+            format_documents(documents),
+            chat_history=chat_history,
         )
-        return generator.answer(question, format_documents(documents)), documents
+        return answer, documents
+
+    def ask_stream(
+        self,
+        question: str,
+        *,
+        chat_history: str = "Предыдущий разговор отсутствует.",
+    ) -> tuple[Iterator[str], list[Document]]:
+        """Return a token stream while keeping retrieval models in this service."""
+        documents = self.search(question)
+        chunks = self.generator.stream_answer(
+            question,
+            format_documents(documents),
+            chat_history=chat_history,
+        )
+        return chunks, documents
+
+    def warmup(self) -> int:
+        """Load retrieval models before the first real question."""
+        return len(self.search("Проверка готовности поисковой модели"))
+
+    def stats(self) -> dict[str, object]:
+        """Report which reusable components are already initialized."""
+        return {
+            "collection": self.settings.collection_name,
+            "embedding_model": self.settings.embedding_model,
+            "generation_model": self.settings.generation_model,
+            "top_k": self.settings.top_k,
+            "embedding_loaded": self._embedding_model is not None,
+            "reranker_loaded": self._reranker is not None,
+            "retriever_loaded": self._retriever is not None,
+            "generator_client_created": self._generator is not None,
+        }
 

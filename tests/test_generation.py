@@ -13,6 +13,22 @@ class _Response:
         return {"choices": [{"message": {"content": "  Готовый ответ [1].  "}}]}
 
 
+class _StreamResponse:
+    closed = False
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_lines(self, *, decode_unicode: bool):
+        assert decode_unicode is True
+        yield 'data: {"choices":[{"delta":{"content":"Потоковый "}}]}'
+        yield 'data: {"choices":[{"delta":{"content":"ответ"}}]}'
+        yield "data: [DONE]"
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def test_generator_uses_vllm_chat_api(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
@@ -38,3 +54,28 @@ def test_generator_uses_vllm_chat_api(monkeypatch) -> None:
     assert captured["json"]["temperature"] == 0
     assert captured["headers"]["Authorization"] == "Bearer secret"
     assert captured["timeout"] == 7
+
+
+def test_generator_streams_vllm_chat_api(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    response = _StreamResponse()
+
+    def fake_post(url, *, json, headers, timeout, stream):
+        captured.update(
+            url=url,
+            json=json,
+            headers=headers,
+            timeout=timeout,
+            stream=stream,
+        )
+        return response
+
+    monkeypatch.setattr("rag_app.generation.requests.post", fake_post)
+    generator = TextGenerator("example/model")
+
+    answer = "".join(generator.stream_answer("Вопрос?", "[1] Контекст"))
+
+    assert answer == "Потоковый ответ"
+    assert captured["json"]["stream"] is True
+    assert captured["stream"] is True
+    assert response.closed is True

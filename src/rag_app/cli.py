@@ -3,12 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from rag_app.config import Settings
-from rag_app.service import RagService
 
 
 def _add_artifact_cache_arguments(parser: argparse.ArgumentParser) -> None:
@@ -62,6 +62,33 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ask_parser = subparsers.add_parser("ask", help="Сформировать ответ по найденному контексту")
     ask_parser.add_argument("question")
+
+    chat_parser = subparsers.add_parser(
+        "chat",
+        help="Запустить интерактивный чат без перезагрузки моделей между вопросами",
+    )
+    chat_parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Печатать ответ по мере поступления токенов от vLLM",
+    )
+    chat_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="Переопределить количество фрагментов в контексте",
+    )
+    chat_parser.add_argument(
+        "--history-turns",
+        type=int,
+        default=6,
+        help="Количество последних пар вопрос/ответ, передаваемых модели (по умолчанию: 6)",
+    )
+    chat_parser.add_argument(
+        "--no-warmup",
+        action="store_true",
+        help="Не загружать поисковые модели до первого вопроса",
+    )
 
     evaluate_parser = subparsers.add_parser(
         "evaluate",
@@ -161,6 +188,17 @@ def main() -> None:
     )
 
     settings = Settings.from_env()
+    if args.command == "chat" and args.top_k is not None:
+        if args.top_k <= 0:
+            parser.error("--top-k должен быть больше нуля")
+        settings = replace(
+            settings,
+            top_k=args.top_k,
+            candidate_k=max(settings.candidate_k, args.top_k),
+        )
+    # Heavy retrieval dependencies are imported only after CLI arguments are valid.
+    from rag_app.service import RagService
+
     service = RagService(settings)
     try:
         if args.command == "index":
@@ -179,6 +217,18 @@ def main() -> None:
         elif args.command == "ask":
             answer, _ = service.ask(args.question)
             print(answer)
+        elif args.command == "chat":
+            from rag_app.chat import run_interactive
+
+            if not args.no_warmup:
+                print("[Warmup] Загрузка embedding-модели и reranker ...")
+                found = service.warmup()
+                print(f"[Warmup] Поисковые модели готовы; найдено фрагментов: {found}.")
+            run_interactive(
+                service,
+                stream=args.stream,
+                max_history_turns=args.history_turns,
+            )
         elif args.command == "evaluate":
             from rag_app.evaluation import evaluate, load_cases, summarize, write_report
             cases = load_cases(args.testset)
