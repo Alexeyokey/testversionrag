@@ -21,7 +21,7 @@ class Settings:
     generation_model: str | None = "QuantTrio/Qwen3.6-27B-AWQ"
     vllm_base_url: str = "http://localhost:8000/v1"
     vllm_api_key: str | None = None
-    vllm_timeout: float = 120.0
+    vllm_timeout: float = 300.0
     trust_remote_code: bool = True
     temperature: float = 0.3
     thinking: bool = False

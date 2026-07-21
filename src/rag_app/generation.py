@@ -32,7 +32,7 @@ def check_vllm_server(
     *,
     base_url: str = "http://localhost:8000/v1",
     api_key: str | None = None,
-    timeout: float = 120.0,
+    timeout: float = 300.0,
     prompt: str = "Ответь одним словом: ГОТОВО.",
 ) -> dict[str, Any]:
     """Проверить версию, опубликованную модель и генерацию через API vLLM."""
@@ -113,7 +113,7 @@ class TextGenerator:
         temperature: float = 0.0,
         thinking: bool = False,
         api_key: str | None = None,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> None:
         # trust_remote_code remains in the signature for backwards compatibility.
         # Model-loading options now belong to the vLLM server process.
