@@ -136,6 +136,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Не вычислять диагностическую Answer Relevancy; записать null в отчёт",
     )
+    ragas_parser.add_argument(
+        "--skip-context-precision",
+        action="store_true",
+        help="Не вычислять диагностическую Context Precision; записать null в отчёт",
+    )
     _add_artifact_cache_arguments(ragas_parser)
 
     benchmark_parser = subparsers.add_parser(
@@ -169,6 +174,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--skip-answer-relevancy",
         action="store_true",
         help="Не вычислять Answer Relevancy в RAGAS и DeepEval",
+    )
+    benchmark_parser.add_argument(
+        "--skip-context-precision",
+        action="store_true",
+        help="Не вычислять Context Precision в RAGAS и DeepEval",
     )
     _add_artifact_cache_arguments(benchmark_parser)
     return parser
@@ -271,6 +281,7 @@ def main() -> None:
                 settings,
                 threshold=threshold,
                 include_answer_relevancy=not args.skip_answer_relevancy,
+                include_context_precision=not args.skip_context_precision,
                 artifact_cache=artifact_cache,
                 refresh_artifact_cache=args.refresh_artifact_cache,
             )
@@ -299,6 +310,8 @@ def main() -> None:
                     print(f"Ошибка записи артефакта: {cache_error}")
             if args.skip_answer_relevancy:
                 print("Answer Relevancy: не измерялась (null)")
+            if args.skip_context_precision:
+                print("Context Precision: не измерялась (null)")
             if summary["failed"]:
                 raise SystemExit(1)
         elif args.command == "benchmark":
@@ -325,6 +338,7 @@ def main() -> None:
                 cases,
                 threshold=threshold,
                 include_answer_relevancy=not args.skip_answer_relevancy,
+                include_context_precision=not args.skip_context_precision,
                 progress=print,
                 artifact_cache=artifact_cache,
                 refresh_artifact_cache=args.refresh_artifact_cache,

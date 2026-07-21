@@ -140,6 +140,7 @@ def build_deepeval_scorers(
     threshold: float | None = None,
     judge: Any | None = None,
     include_answer_relevancy: bool = True,
+    include_context_precision: bool = True,
 ) -> dict[str, Any]:
     """Создать сопоставимые обязательные и диагностические DeepEval-метрики."""
     try:
@@ -193,8 +194,9 @@ def build_deepeval_scorers(
             ],
             async_mode=False,
         ),
-        "context_precision": ContextualPrecisionMetric(**common),
     }
+    if include_context_precision:
+        scorers["context_precision"] = ContextualPrecisionMetric(**common)
     if include_answer_relevancy:
         scorers["answer_relevancy"] = AnswerRelevancyMetric(**common)
     return scorers
@@ -208,6 +210,7 @@ def evaluate_samples_with_deepeval(
     scorers: dict[str, Any] | None = None,
     test_case_factory: Callable[..., Any] | None = None,
     include_answer_relevancy: bool = True,
+    include_context_precision: bool = True,
 ) -> list[DeepEvalEvaluationResult]:
     """Оценить ответы обязательными и диагностическими метриками DeepEval."""
     # Итоговые LLM-as-a-judge оценки намеренно не кэшируются: каждый запуск
@@ -220,6 +223,7 @@ def evaluate_samples_with_deepeval(
         settings,
         threshold=resolved_threshold,
         include_answer_relevancy=include_answer_relevancy,
+        include_context_precision=include_context_precision,
     )
     missing_metrics = set(REQUIRED_JUDGE_METRICS) - set(active_scorers)
     if missing_metrics:
@@ -232,6 +236,7 @@ def evaluate_samples_with_deepeval(
         for metric_name in METRIC_NAMES
         if metric_name in active_scorers
         and (metric_name != "answer_relevancy" or include_answer_relevancy)
+        and (metric_name != "context_precision" or include_context_precision)
     )
     skipped_metric_names = tuple(
         metric_name for metric_name in METRIC_NAMES if metric_name not in enabled_metric_names

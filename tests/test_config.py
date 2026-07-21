@@ -11,3 +11,12 @@ def test_legacy_metric_cache_environment_variables_are_ignored(monkeypatch) -> N
 
     assert settings.evaluation_artifact_cache_enabled is True
     assert settings.evaluation_artifact_cache_dir == "evaluation/artifact-cache"
+
+
+def test_context_precision_concurrency_is_loaded_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("RAGAS_CONTEXT_PRECISION_CONCURRENCY", "3")
+
+    settings = Settings.from_env()
+
+    assert settings.ragas_context_precision_concurrency == 3
+    settings.validate()

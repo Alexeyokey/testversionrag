@@ -22,6 +22,20 @@ def test_evaluation_accepts_only_artifact_cache_flags() -> None:
     assert args.refresh_artifact_cache is True
 
 
+def test_evaluation_accepts_context_precision_skip_flag() -> None:
+    parser = _build_parser()
+
+    ragas_args = parser.parse_args(
+        ["evaluate-ragas", "testset.jsonl", "--skip-context-precision"]
+    )
+    benchmark_args = parser.parse_args(
+        ["benchmark", "testset.jsonl", "--skip-context-precision"]
+    )
+
+    assert ragas_args.skip_context_precision is True
+    assert benchmark_args.skip_context_precision is True
+
+
 @pytest.mark.parametrize(
     "legacy_flag",
     ["--metric-cache-dir", "--no-metric-cache", "--refresh-metric-cache"],

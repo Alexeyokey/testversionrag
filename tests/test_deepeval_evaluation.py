@@ -92,6 +92,36 @@ def test_deepeval_optional_metrics_do_not_fail_and_relevancy_can_be_skipped() ->
     assert summary["metrics"]["answer_relevancy"] is None
 
 
+def test_deepeval_can_skip_context_precision() -> None:
+    context_precision = _Metric(0.75)
+    scorers = {
+        "faithfulness": _Metric(0.9),
+        "context_recall": _Metric(0.8),
+        "answer_accuracy": _Metric(1.0),
+        "context_precision": context_precision,
+        "answer_relevancy": _Metric(0.85),
+    }
+    sample = RagEvaluationSample(
+        question="Когда заключён договор?",
+        reference="15 марта 2025 года",
+        response="Договор заключён 15 марта 2025 года.",
+        retrieved_contexts=("Дата договора — 15 марта 2025 года.",),
+        sources=("contract.md",),
+    )
+
+    result = evaluate_samples_with_deepeval(
+        [sample],
+        Settings(enable_reranker=False),
+        scorers=scorers,
+        test_case_factory=_case_factory,
+        include_context_precision=False,
+    )[0]
+
+    assert result.scores["context_precision"] is None
+    assert result.skipped_metrics == ("context_precision",)
+    assert context_precision.cases == []
+
+
 def test_deepeval_preserves_rag_error() -> None:
     scorers = {
         name: _Metric(1.0)

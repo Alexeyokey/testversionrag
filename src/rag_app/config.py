@@ -39,6 +39,7 @@ class Settings:
     ragas_judge_model: str | None = None
     ragas_threshold: float = 0.7
     ragas_max_tokens: int = 2048
+    ragas_context_precision_concurrency: int = 5
     evaluation_artifact_cache_enabled: bool = True
     evaluation_artifact_cache_dir: str = "evaluation/artifact-cache"
 
@@ -83,6 +84,12 @@ class Settings:
             ragas_max_tokens=int(
                 os.getenv("RAGAS_MAX_TOKENS", defaults.ragas_max_tokens)
             ),
+            ragas_context_precision_concurrency=int(
+                os.getenv(
+                    "RAGAS_CONTEXT_PRECISION_CONCURRENCY",
+                    defaults.ragas_context_precision_concurrency,
+                )
+            ),
             evaluation_artifact_cache_enabled=_as_bool(
                 "EVALUATION_ARTIFACT_CACHE_ENABLED",
                 defaults.evaluation_artifact_cache_enabled,
@@ -120,5 +127,9 @@ class Settings:
             raise ValueError("RAGAS_THRESHOLD должен находиться в диапазоне от 0 до 1")
         if self.ragas_max_tokens <= 0:
             raise ValueError("RAGAS_MAX_TOKENS должен быть больше нуля")
+        if self.ragas_context_precision_concurrency <= 0:
+            raise ValueError(
+                "RAGAS_CONTEXT_PRECISION_CONCURRENCY должен быть больше нуля"
+            )
         if not self.evaluation_artifact_cache_dir.strip():
             raise ValueError("EVALUATION_ARTIFACT_CACHE_DIR не может быть пустым")

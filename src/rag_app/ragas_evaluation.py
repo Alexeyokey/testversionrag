@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from dataclasses import asdict, dataclass
@@ -228,6 +229,91 @@ class _ArtifactCachingLLM:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _MetricValue:
+    """Минимальный совместимый с RAGAS результат пользовательской метрики."""
+
+    value: float
+    reason: str | None = None
+
+
+class _ParallelContextPrecision:
+    """Параллельно получить независимый verdict для каждого retrieved context."""
+
+    def __init__(self, scorer: Any, *, concurrency: int) -> None:
+        if concurrency <= 0:
+            raise ValueError("Context Precision concurrency должна быть больше нуля")
+        self._scorer = scorer
+        self._concurrency = concurrency
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._scorer, name)
+
+    def score(
+        self,
+        *,
+        user_input: str,
+        reference: str,
+        retrieved_contexts: list[str],
+    ) -> _MetricValue:
+        return asyncio.run(
+            self.ascore(
+                user_input=user_input,
+                reference=reference,
+                retrieved_contexts=retrieved_contexts,
+            )
+        )
+
+    async def ascore(
+        self,
+        *,
+        user_input: str,
+        reference: str,
+        retrieved_contexts: list[str],
+    ) -> _MetricValue:
+        # RAGAS оценивает каждый чанк независимо. Запуск исходной метрики с одним
+        # чанком сохраняет её официальный prompt и structured-output контракт.
+        if not retrieved_contexts:
+            result = await self._scorer.ascore(
+                user_input=user_input,
+                reference=reference,
+                retrieved_contexts=[],
+            )
+            return _MetricValue(value=float(result.value))
+
+        semaphore = asyncio.Semaphore(self._concurrency)
+
+        async def evaluate_context(context: str) -> int:
+            async with semaphore:
+                result = await self._scorer.ascore(
+                    user_input=user_input,
+                    reference=reference,
+                    retrieved_contexts=[context],
+                )
+            value = float(result.value)
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"RAGAS вернул нечисловой verdict Context Precision {value!r}"
+                )
+            # Для одного чанка Average Precision равна 1 (relevant) либо 0.
+            return int(value >= 0.5)
+
+        verdicts = await asyncio.gather(
+            *(evaluate_context(context) for context in retrieved_contexts)
+        )
+        return _MetricValue(value=self._calculate_average_precision(verdicts))
+
+    @staticmethod
+    def _calculate_average_precision(verdicts: list[int]) -> float:
+        relevant_so_far = 0
+        weighted_precision = 0.0
+        for rank, verdict in enumerate(verdicts, start=1):
+            relevant_so_far += verdict
+            if verdict:
+                weighted_precision += relevant_so_far / rank
+        return weighted_precision / (relevant_so_far + 1e-10)
+
+
 def _validate_model(model: Any, value: Any) -> Any:
     if hasattr(model, "model_validate"):
         return model.model_validate(value)
@@ -294,6 +380,7 @@ def build_ragas_scorers(
     embedding_model: EmbeddingModel | None = None,
     *,
     include_answer_relevancy: bool = True,
+    include_context_precision: bool = True,
     artifact_cache: ArtifactCache | None = None,
     refresh_artifact_cache: bool = False,
 ) -> dict[str, Any]:
@@ -349,8 +436,12 @@ def build_ragas_scorers(
         "faithfulness": faithfulness,
         "context_recall": ContextRecall(llm=judge),
         "answer_accuracy": AnswerAccuracy(llm=judge),
-        "context_precision": ContextPrecision(llm=judge),
     }
+    if include_context_precision:
+        scorers["context_precision"] = _ParallelContextPrecision(
+            ContextPrecision(llm=judge),
+            concurrency=settings.ragas_context_precision_concurrency,
+        )
     if include_answer_relevancy:
         if embedding_model is None:
             from rag_app.embeddings import EmbeddingModel
@@ -441,6 +532,7 @@ def evaluate_with_ragas(
     threshold: float | None = None,
     scorers: dict[str, Any] | None = None,
     include_answer_relevancy: bool = True,
+    include_context_precision: bool = True,
     artifact_cache: ArtifactCache | None = None,
     refresh_artifact_cache: bool = False,
 ) -> list[RagasEvaluationResult]:
@@ -453,6 +545,7 @@ def evaluate_with_ragas(
         scorers=scorers,
         embedding_model=service.embedding_model if scorers is None else None,
         include_answer_relevancy=include_answer_relevancy,
+        include_context_precision=include_context_precision,
         artifact_cache=artifact_cache,
         refresh_artifact_cache=refresh_artifact_cache,
     )
@@ -466,6 +559,7 @@ def evaluate_samples_with_ragas(
     scorers: dict[str, Any] | None = None,
     embedding_model: EmbeddingModel | None = None,
     include_answer_relevancy: bool = True,
+    include_context_precision: bool = True,
     artifact_cache: ArtifactCache | None = None,
     refresh_artifact_cache: bool = False,
 ) -> list[RagasEvaluationResult]:
@@ -477,6 +571,7 @@ def evaluate_samples_with_ragas(
         settings,
         embedding_model,
         include_answer_relevancy=include_answer_relevancy,
+        include_context_precision=include_context_precision,
         artifact_cache=artifact_cache,
         refresh_artifact_cache=refresh_artifact_cache,
     )
@@ -490,6 +585,7 @@ def evaluate_samples_with_ragas(
         for metric_name in METRIC_NAMES
         if metric_name in active_scorers
         and (metric_name != "answer_relevancy" or include_answer_relevancy)
+        and (metric_name != "context_precision" or include_context_precision)
     )
     skipped_metric_names = tuple(
         metric_name for metric_name in METRIC_NAMES if metric_name not in enabled_metric_names

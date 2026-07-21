@@ -103,6 +103,7 @@ def run_benchmark(
     test_case_factory: Callable[..., Any] | None = None,
     progress: Callable[[str], None] | None = None,
     include_answer_relevancy: bool = True,
+    include_context_precision: bool = True,
     artifact_cache: ArtifactCache | None = None,
     refresh_artifact_cache: bool = False,
 ) -> list[BenchmarkConfigurationResult]:
@@ -134,6 +135,7 @@ def run_benchmark(
         settings,
         shared_embedding_model,
         include_answer_relevancy=include_answer_relevancy,
+        include_context_precision=include_context_precision,
         artifact_cache=artifact_cache,
         refresh_artifact_cache=refresh_artifact_cache,
     )
@@ -141,6 +143,7 @@ def run_benchmark(
         settings,
         threshold=resolved_threshold,
         include_answer_relevancy=include_answer_relevancy,
+        include_context_precision=include_context_precision,
     )
 
     benchmark_results: list[BenchmarkConfigurationResult] = []
@@ -165,6 +168,7 @@ def run_benchmark(
             threshold=resolved_threshold,
             scorers=active_ragas_scorers,
             include_answer_relevancy=include_answer_relevancy,
+            include_context_precision=include_context_precision,
             artifact_cache=artifact_cache,
             refresh_artifact_cache=refresh_artifact_cache,
         )
@@ -177,6 +181,7 @@ def run_benchmark(
             scorers=active_deepeval_scorers,
             test_case_factory=test_case_factory,
             include_answer_relevancy=include_answer_relevancy,
+            include_context_precision=include_context_precision,
         )
         benchmark_results.append(
             BenchmarkConfigurationResult(

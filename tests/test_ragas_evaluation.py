@@ -8,6 +8,7 @@ from rag_app.evaluation import EvaluationCase
 from rag_app.ragas_evaluation import (
     _ArtifactCachingLLM,
     _CachedRagasArtifact,
+    _ParallelContextPrecision,
     _build_vllm_async_client,
     evaluate_with_ragas,
     summarize_ragas,
@@ -42,6 +43,25 @@ class _Scorer:
     def score(self, **kwargs):
         self.calls.append(kwargs)
         return SimpleNamespace(value=self.value)
+
+
+class _AsyncContextPrecisionScorer:
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+        self.calls: list[str] = []
+
+    async def ascore(self, **kwargs):
+        context = kwargs["retrieved_contexts"][0]
+        self.calls.append(context)
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0.01)
+        finally:
+            self.active -= 1
+        value = 0.9999999999 if context.startswith("relevant") else 0.0
+        return SimpleNamespace(value=value)
 
 
 @dataclass
@@ -335,6 +355,50 @@ def test_ragas_can_skip_answer_relevancy() -> None:
     assert results[0].scores["answer_relevancy"] is None
     assert results[0].skipped_metrics == ("answer_relevancy",)
     assert summary["metrics"]["answer_relevancy"] is None
+
+
+def test_ragas_can_skip_context_precision() -> None:
+    context_precision = _Scorer(0.75)
+    scorers = {
+        "faithfulness": _Scorer(0.9),
+        "context_recall": _Scorer(0.8),
+        "answer_accuracy": _Scorer(1.0),
+        "context_precision": context_precision,
+        "answer_relevancy": _Scorer(0.85),
+    }
+
+    result = evaluate_with_ragas(
+        _Service(),
+        [
+            EvaluationCase(
+                question="Когда заключён договор?",
+                reference="Договор заключён 15 марта 2025 года.",
+            )
+        ],
+        Settings(enable_reranker=False),
+        scorers=scorers,
+        include_context_precision=False,
+    )[0]
+
+    assert result.scores["context_precision"] is None
+    assert result.skipped_metrics == ("context_precision",)
+    assert context_precision.calls == []
+
+
+def test_context_precision_evaluates_contexts_in_parallel_and_preserves_rank() -> None:
+    original = _AsyncContextPrecisionScorer()
+    scorer = _ParallelContextPrecision(original, concurrency=2)
+
+    result = scorer.score(
+        user_input="Вопрос",
+        reference="Эталон",
+        retrieved_contexts=["relevant-1", "noise", "relevant-2", "noise-2"],
+    )
+
+    expected = (1.0 + 2 / 3) / 2
+    assert abs(result.value - expected) < 1e-9
+    assert original.max_active == 2
+    assert original.calls == ["relevant-1", "noise", "relevant-2", "noise-2"]
 
 
 def test_ragas_requires_reference() -> None:
