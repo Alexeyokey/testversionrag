@@ -26,7 +26,7 @@ class Settings:
     temperature: float = 0.3
     thinking: bool = False
     enable_reranker: bool = True
-    chunk_size: int = 512
+    chunk_size: int = 1024
     chunk_overlap: int = 50
     docling_chunk_tokens: int = 512
     embedding_batch_size: int = 32

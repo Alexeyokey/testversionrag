@@ -9,6 +9,14 @@ def test_default_generation_model_is_qwen36(monkeypatch) -> None:
     assert settings.generation_model == "QuantTrio/Qwen3.6-27B-AWQ"
 
 
+def test_default_text_chunk_size_is_1024(monkeypatch) -> None:
+    monkeypatch.delenv("RAG_CHUNK_SIZE", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.chunk_size == 1024
+
+
 def test_legacy_metric_cache_environment_variables_are_ignored(monkeypatch) -> None:
     monkeypatch.delenv("EVALUATION_ARTIFACT_CACHE_ENABLED", raising=False)
     monkeypatch.delenv("EVALUATION_ARTIFACT_CACHE_DIR", raising=False)

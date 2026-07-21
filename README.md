@@ -166,7 +166,8 @@ docker compose run --rm -it app chat --stream
 - `RAG_VLLM_GPU_MEMORY_UTILIZATION` — доля памяти GPU для vLLM (по умолчанию 0.9);
 - `RAG_VLLM_TENSOR_PARALLEL_SIZE` — число GPU для tensor parallel (по умолчанию 1);
 - `RAG_MAX_NEW_TOKENS` — предел длины ответа;
-- `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP` — разбиение документов;
+- `RAG_CHUNK_SIZE` — размер чанка TXT/MD/RST/RTF в символах (по умолчанию 1024);
+- `RAG_CHUNK_OVERLAP` — пересечение соседних текстовых чанков (по умолчанию 50 символов);
 - `RAG_DOCLING_CHUNK_TOKENS` — токеновый лимит чанков PDF/DOCX/ODT/XLSX;
 - `RAG_EMBEDDING_BATCH_SIZE` — число чанков в одной порции embedding и записи в Qdrant;
 - `RAG_TOP_K`, `RAG_CANDIDATE_K` — количество результатов;
