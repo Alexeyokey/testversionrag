@@ -416,6 +416,9 @@ def build_ragas_scorers(
         client=client,
         temperature=0.0,
         max_tokens=settings.ragas_max_tokens,
+        extra_body={
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
         system_prompt=(
             "You are an impartial RAG evaluator. Follow the requested structured "
             "output schema exactly and judge only the supplied text."
