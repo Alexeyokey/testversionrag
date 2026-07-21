@@ -1,6 +1,14 @@
 from rag_app.config import Settings
 
 
+def test_default_generation_model_is_qwen36(monkeypatch) -> None:
+    monkeypatch.delenv("RAG_GENERATION_MODEL", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.generation_model == "QuantTrio/Qwen3.6-27B-AWQ"
+
+
 def test_legacy_metric_cache_environment_variables_are_ignored(monkeypatch) -> None:
     monkeypatch.delenv("EVALUATION_ARTIFACT_CACHE_ENABLED", raising=False)
     monkeypatch.delenv("EVALUATION_ARTIFACT_CACHE_DIR", raising=False)

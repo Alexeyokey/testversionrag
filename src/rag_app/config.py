@@ -18,7 +18,7 @@ class Settings:
     collection_name: str = "documents"
     embedding_model: str = "Octen/Octen-Embedding-0.6B"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
-    generation_model: str | None = "QuantTrio/Qwen3.5-9B-AWQ"
+    generation_model: str | None = "QuantTrio/Qwen3.6-27B-AWQ"
     vllm_base_url: str = "http://localhost:8000/v1"
     vllm_api_key: str | None = None
     vllm_timeout: float = 120.0

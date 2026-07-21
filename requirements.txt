@@ -19,5 +19,5 @@ ragas==0.4.3
 requests>=2.32
 sentence-transformers>=3.2
 torch>=2.2
-transformers>=5.4
+transformers==5.5.4
 xlrd>=2.0

@@ -1,0 +1,8 @@
+# syntax=docker/dockerfile:1
+
+FROM vllm/vllm-openai:v0.19.0
+
+# Версия vLLM уже зафиксирована базовым образом. Обновляем Transformers до
+# версии, указанной автором Qwen3.6-27B-AWQ, и проверяем обе зависимости при сборке.
+RUN python3 -m pip install --no-cache-dir "transformers==5.5.4" && \
+    python3 -c "from importlib.metadata import version; assert version('vllm') == '0.19.0'; assert version('transformers') == '5.5.4'"
