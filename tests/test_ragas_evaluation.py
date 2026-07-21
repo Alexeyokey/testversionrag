@@ -1,14 +1,16 @@
+import asyncio
 from dataclasses import dataclass
 from types import SimpleNamespace
 
 from rag_app.config import Settings
 from rag_app.evaluation import EvaluationCase
 from rag_app.ragas_evaluation import (
+    _CachedRagasPrompt,
     _build_vllm_async_client,
     evaluate_with_ragas,
     summarize_ragas,
 )
-from rag_app.metric_cache import MetricScoreCache
+from rag_app.artifact_cache import ArtifactCache
 
 
 @dataclass
@@ -38,6 +40,184 @@ class _Scorer:
     def score(self, **kwargs):
         self.calls.append(kwargs)
         return SimpleNamespace(value=self.value)
+
+
+@dataclass
+class _PromptOutput:
+    statements: list[str]
+
+    @classmethod
+    def model_validate(cls, value):
+        return cls(statements=list(value["statements"]))
+
+
+class _Prompt:
+    output_model = _PromptOutput
+
+    def __init__(self) -> None:
+        self.generate_calls = 0
+        self.multiple_calls = 0
+
+    async def generate(self, **kwargs):
+        del kwargs
+        self.generate_calls += 1
+        return _PromptOutput(["Факт из ответа."])
+
+    async def generate_multiple(self, **kwargs):
+        self.multiple_calls += 1
+        return [
+            _PromptOutput([f"Вопрос {index}?"])
+            for index in range(kwargs["n"])
+        ]
+
+
+class _SequentialPrompt(_Prompt):
+    async def generate(self, **kwargs):
+        del kwargs
+        self.generate_calls += 1
+        return _PromptOutput([f"Вопрос {self.generate_calls}?"])
+
+
+class _ArtifactScorer(_Scorer):
+    def __init__(self, value: float, prompt: _CachedRagasPrompt) -> None:
+        super().__init__(value)
+        self.statement_generator_prompt = prompt
+
+    def score(self, **kwargs):
+        self.calls.append(kwargs)
+        asyncio.run(
+            self.statement_generator_prompt.generate(
+                llm=object(),
+                data={
+                    "question": kwargs["user_input"],
+                    "answer": kwargs["response"],
+                },
+            )
+        )
+        return SimpleNamespace(value=self.value)
+
+
+def test_ragas_prompt_cache_reuses_artifacts_but_not_scores(tmp_path) -> None:
+    cache = ArtifactCache(tmp_path)
+    prompt = _Prompt()
+    facts = _CachedRagasPrompt(
+        prompt,
+        cache,
+        artifact_name="faithfulness_statements",
+        evaluator_config={"judge_model": "local-model"},
+        refresh=False,
+    )
+
+    first = asyncio.run(
+        facts.generate(llm=object(), data={"question": "Что?", "answer": "Ответ."})
+    )
+    second = asyncio.run(
+        facts.generate(llm=object(), data={"question": "Что?", "answer": "Ответ."})
+    )
+
+    assert first == second
+    assert prompt.generate_calls == 1
+    assert facts.cache_hits == 1
+    assert facts.last_value == {"statements": ["Факт из ответа."]}
+
+    questions = _CachedRagasPrompt(
+        prompt,
+        cache,
+        artifact_name="answer_relevancy_questions",
+        evaluator_config={"judge_model": "local-model"},
+        refresh=False,
+    )
+    first_questions = asyncio.run(
+        questions.generate_multiple(llm=object(), data={"response": "Ответ."}, n=3)
+    )
+    second_questions = asyncio.run(
+        questions.generate_multiple(llm=object(), data={"response": "Ответ."}, n=3)
+    )
+
+    assert first_questions == second_questions
+    assert prompt.multiple_calls == 1
+    assert questions.cache_hits == 1
+    assert len(questions.last_value) == 3
+
+
+def test_answer_relevancy_cache_preserves_three_sequential_questions(tmp_path) -> None:
+    cache = ArtifactCache(tmp_path)
+    prompt = _SequentialPrompt()
+    questions = _CachedRagasPrompt(
+        prompt,
+        cache,
+        artifact_name="answer_relevancy_questions",
+        evaluator_config={"judge_model": "local-model", "strictness": 3},
+        refresh=False,
+    )
+    call = {"llm": object(), "data": {"response": "Ответ."}}
+
+    questions.begin_sample()
+    generated = [asyncio.run(questions.generate(**call)) for _ in range(3)]
+    questions.finish_sample(save=True)
+
+    assert [item.statements[0] for item in generated] == [
+        "Вопрос 1?",
+        "Вопрос 2?",
+        "Вопрос 3?",
+    ]
+
+    questions.begin_sample()
+    cached = [asyncio.run(questions.generate(**call)) for _ in range(3)]
+    questions.finish_sample(save=True)
+
+    assert [item.statements[0] for item in cached] == [
+        "Вопрос 1?",
+        "Вопрос 2?",
+        "Вопрос 3?",
+    ]
+    assert prompt.generate_calls == 3
+    assert questions.cache_hits == 1
+
+
+def test_ragas_report_marks_cached_artifact_while_recomputing_score(tmp_path) -> None:
+    cache = ArtifactCache(tmp_path)
+    cached_prompt = _CachedRagasPrompt(
+        _Prompt(),
+        cache,
+        artifact_name="faithfulness_statements",
+        evaluator_config={"judge_model": "local-model"},
+        refresh=False,
+    )
+    faithfulness = _ArtifactScorer(0.9, cached_prompt)
+    scorers = {
+        "faithfulness": faithfulness,
+        "context_recall": _Scorer(0.8),
+        "answer_accuracy": _Scorer(1.0),
+        "context_precision": _Scorer(0.75),
+        "answer_relevancy": _Scorer(0.85),
+    }
+    cases = [
+        EvaluationCase(
+            question="Когда заключён договор?",
+            reference="Договор заключён 15 марта 2025 года.",
+        )
+    ]
+
+    first = evaluate_with_ragas(
+        _Service(),
+        cases,
+        Settings(enable_reranker=False),
+        scorers=scorers,
+    )[0]
+    second = evaluate_with_ragas(
+        _Service(),
+        cases,
+        Settings(enable_reranker=False),
+        scorers=scorers,
+    )[0]
+
+    assert first.artifacts == {
+        "faithfulness_statements": {"statements": ["Факт из ответа."]}
+    }
+    assert first.cached_artifacts == ()
+    assert second.cached_artifacts == ("faithfulness_statements",)
+    assert len(faithfulness.calls) == 2
 
 
 def test_ragas_scores_answer_and_context_with_injected_judges() -> None:
@@ -177,7 +357,9 @@ def test_ragas_judge_uses_async_openai_client(monkeypatch) -> None:
     }
 
 
-def test_ragas_reuses_successful_metric_scores_from_disk(tmp_path) -> None:
+def test_ragas_recomputes_every_metric_score_when_artifact_cache_is_enabled(
+    tmp_path,
+) -> None:
     scorers = {
         "faithfulness": _Scorer(0.9),
         "context_recall": _Scorer(0.8),
@@ -192,38 +374,23 @@ def test_ragas_reuses_successful_metric_scores_from_disk(tmp_path) -> None:
         )
     ]
     settings = Settings(enable_reranker=False)
-    cache = MetricScoreCache(tmp_path)
+    cache = ArtifactCache(tmp_path)
 
     first = evaluate_with_ragas(
         _Service(),
         cases,
         settings,
         scorers=scorers,
-        metric_cache=cache,
+        artifact_cache=cache,
     )[0]
     second = evaluate_with_ragas(
         _Service(),
         cases,
         settings,
         scorers=scorers,
-        metric_cache=cache,
+        artifact_cache=cache,
     )[0]
-    refreshed = evaluate_with_ragas(
-        _Service(),
-        cases,
-        settings,
-        scorers=scorers,
-        metric_cache=cache,
-        refresh_metric_cache=True,
-    )[0]
-
-    assert first.cached_metrics == ()
-    assert second.cached_metrics == (
-        "faithfulness",
-        "context_recall",
-        "answer_accuracy",
-        "context_precision",
-        "answer_relevancy",
-    )
-    assert refreshed.cached_metrics == ()
+    assert first.cached_artifacts == ()
+    assert second.cached_artifacts == ()
     assert all(len(scorer.calls) == 2 for scorer in scorers.values())
+    assert list(tmp_path.rglob("*.json")) == []

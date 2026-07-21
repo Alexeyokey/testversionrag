@@ -9,4 +9,4 @@ __pycache__/
 data/*
 !data/.gitkeep
 hf-cache/
-evaluation/metric-cache/
+evaluation/artifact-cache/
