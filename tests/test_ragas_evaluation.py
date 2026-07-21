@@ -10,6 +10,7 @@ from rag_app.ragas_evaluation import (
     _CachedRagasArtifact,
     _ParallelContextPrecision,
     _build_vllm_async_client,
+    build_ragas_scorers,
     evaluate_with_ragas,
     summarize_ragas,
 )
@@ -472,6 +473,60 @@ def test_ragas_judge_uses_async_openai_client(monkeypatch) -> None:
         "base_url": "http://vllm:8000/v1",
         "timeout": 42,
         "max_retries": 2,
+    }
+
+
+def test_ragas_judge_disables_thinking(monkeypatch) -> None:
+    captured: dict = {}
+
+    class _BaseRagasEmbedding:
+        pass
+
+    class _Metric:
+        def __init__(self, *, llm) -> None:
+            self.llm = llm
+
+    def _llm_factory(model, **kwargs):
+        captured["model"] = model
+        captured.update(kwargs)
+        return object()
+
+    ragas_module = ModuleType("ragas")
+    embeddings_module = ModuleType("ragas.embeddings")
+    embeddings_base_module = ModuleType("ragas.embeddings.base")
+    embeddings_base_module.BaseRagasEmbedding = _BaseRagasEmbedding
+    llms_module = ModuleType("ragas.llms")
+    llms_module.llm_factory = _llm_factory
+    metrics_module = ModuleType("ragas.metrics")
+    collections_module = ModuleType("ragas.metrics.collections")
+    for metric_name in (
+        "AnswerAccuracy",
+        "AnswerRelevancy",
+        "ContextPrecision",
+        "ContextRecall",
+        "Faithfulness",
+    ):
+        setattr(collections_module, metric_name, _Metric)
+
+    monkeypatch.setitem(sys.modules, "ragas", ragas_module)
+    monkeypatch.setitem(sys.modules, "ragas.embeddings", embeddings_module)
+    monkeypatch.setitem(sys.modules, "ragas.embeddings.base", embeddings_base_module)
+    monkeypatch.setitem(sys.modules, "ragas.llms", llms_module)
+    monkeypatch.setitem(sys.modules, "ragas.metrics", metrics_module)
+    monkeypatch.setitem(sys.modules, "ragas.metrics.collections", collections_module)
+    monkeypatch.setattr(
+        "rag_app.ragas_evaluation._build_vllm_async_client",
+        lambda settings: object(),
+    )
+
+    build_ragas_scorers(
+        Settings(enable_reranker=False, generation_model="judge-model"),
+        include_answer_relevancy=False,
+        include_context_precision=False,
+    )
+
+    assert captured["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False},
     }
 
 
