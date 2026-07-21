@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from rag_app.generation import TextGenerator
+import pytest
+
+from rag_app.generation import TextGenerator, check_vllm_server
 
 
 class _Response:
@@ -27,6 +29,17 @@ class _StreamResponse:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _JsonResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self.payload
 
 
 def test_generator_uses_vllm_chat_api(monkeypatch) -> None:
@@ -79,3 +92,54 @@ def test_generator_streams_vllm_chat_api(monkeypatch) -> None:
     assert captured["json"]["stream"] is True
     assert captured["stream"] is True
     assert response.closed is True
+
+
+def test_check_vllm_server_checks_version_model_and_generation(monkeypatch) -> None:
+    requested_urls: list[str] = []
+    captured_post: dict[str, Any] = {}
+
+    def fake_get(url, *, headers, timeout):
+        requested_urls.append(url)
+        assert headers["Authorization"] == "Bearer secret"
+        assert timeout == 9
+        if url.endswith("/version"):
+            return _JsonResponse({"version": "0.19.0"})
+        return _JsonResponse({"data": [{"id": "QuantTrio/Qwen3.6-27B-AWQ"}]})
+
+    def fake_post(url, *, json, headers, timeout):
+        captured_post.update(url=url, json=json, headers=headers, timeout=timeout)
+        return _JsonResponse({"choices": [{"message": {"content": "ГОТОВО"}}]})
+
+    monkeypatch.setattr("rag_app.generation.requests.get", fake_get)
+    monkeypatch.setattr("rag_app.generation.requests.post", fake_post)
+
+    result = check_vllm_server(
+        "QuantTrio/Qwen3.6-27B-AWQ",
+        base_url="http://vllm:8000/v1/",
+        api_key="secret",
+        timeout=9,
+    )
+
+    assert requested_urls == [
+        "http://vllm:8000/version",
+        "http://vllm:8000/v1/models",
+    ]
+    assert captured_post["url"] == "http://vllm:8000/v1/chat/completions"
+    assert captured_post["json"]["chat_template_kwargs"] == {
+        "enable_thinking": False
+    }
+    assert result["vllm_version"] == "0.19.0"
+    assert result["response"] == "ГОТОВО"
+
+
+def test_check_vllm_server_rejects_another_served_model(monkeypatch) -> None:
+    def fake_get(url, *, headers, timeout):
+        del headers, timeout
+        if url.endswith("/version"):
+            return _JsonResponse({"version": "0.19.0"})
+        return _JsonResponse({"data": [{"id": "another/model"}]})
+
+    monkeypatch.setattr("rag_app.generation.requests.get", fake_get)
+
+    with pytest.raises(RuntimeError, match="не обслуживает модель"):
+        check_vllm_server("QuantTrio/Qwen3.6-27B-AWQ")

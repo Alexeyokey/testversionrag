@@ -5,6 +5,15 @@ import pytest
 from rag_app.cli import _build_parser
 
 
+def test_check_vllm_command_accepts_custom_prompt() -> None:
+    parser = _build_parser()
+
+    args = parser.parse_args(["check-vllm", "--prompt", "ping"])
+
+    assert args.command == "check-vllm"
+    assert args.prompt == "ping"
+
+
 def test_evaluation_accepts_only_artifact_cache_flags() -> None:
     parser = _build_parser()
 

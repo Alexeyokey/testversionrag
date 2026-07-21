@@ -27,6 +27,80 @@ Question: {question}
 Answer directly. Do not include a thinking process."""
 
 
+def check_vllm_server(
+    model_name: str,
+    *,
+    base_url: str = "http://localhost:8000/v1",
+    api_key: str | None = None,
+    timeout: float = 120.0,
+    prompt: str = "Ответь одним словом: ГОТОВО.",
+) -> dict[str, Any]:
+    """Проверить версию, опубликованную модель и генерацию через API vLLM."""
+    api_root = base_url.rstrip("/")
+    server_root = api_root.removesuffix("/v1")
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        version_response = requests.get(
+            f"{server_root}/version",
+            headers=headers,
+            timeout=timeout,
+        )
+        version_response.raise_for_status()
+        version = version_response.json()["version"]
+
+        models_response = requests.get(
+            f"{api_root}/models",
+            headers=headers,
+            timeout=timeout,
+        )
+        models_response.raise_for_status()
+        models = models_response.json()["data"]
+        served_models = [item["id"] for item in models]
+        if model_name not in served_models:
+            raise RuntimeError(
+                f"vLLM не обслуживает модель {model_name!r}; "
+                f"доступны: {', '.join(served_models) or 'нет моделей'}"
+            )
+
+        completion_response = requests.post(
+            f"{api_root}/chat/completions",
+            headers=headers,
+            timeout=timeout,
+            json={
+                "model": model_name,
+                "messages": [{"role": "user", "content": f"{prompt}\n/no_think"}],
+                "max_tokens": 16,
+                "temperature": 0.0,
+                "stream": False,
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+        )
+        completion_response.raise_for_status()
+        content = completion_response.json()["choices"][0]["message"]["content"]
+    except RuntimeError:
+        raise
+    except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as error:
+        raise RuntimeError(
+            f"Проверка vLLM по адресу {api_root} завершилась ошибкой: {error}"
+        ) from error
+
+    if not isinstance(version, str) or not version:
+        raise RuntimeError("vLLM вернул пустую или некорректную версию")
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("vLLM вернул пустой ответ на проверочный запрос")
+
+    return {
+        "base_url": api_root,
+        "vllm_version": version,
+        "model": model_name,
+        "served_models": served_models,
+        "response": content.strip(),
+    }
+
+
 class TextGenerator:
     """Generate answers through a vLLM OpenAI-compatible server."""
 

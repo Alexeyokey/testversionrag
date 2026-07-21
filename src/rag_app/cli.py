@@ -48,6 +48,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", action="store_true")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    check_parser = subparsers.add_parser(
+        "check-vllm",
+        help="Проверить версию, модель и тестовую генерацию vLLM",
+    )
+    check_parser.add_argument(
+        "--prompt",
+        default="Ответь одним словом: ГОТОВО.",
+        help="Короткий запрос для smoke-теста генерации",
+    )
+
     index_parser = subparsers.add_parser("index", help="Проиндексировать файл или папку")
     index_parser.add_argument("source")
     index_parser.add_argument(
@@ -198,6 +208,24 @@ def main() -> None:
     )
 
     settings = Settings.from_env()
+    if args.command == "check-vllm":
+        if not settings.generation_model:
+            parser.error("RAG_GENERATION_MODEL не задана")
+        from rag_app.generation import check_vllm_server
+
+        try:
+            result = check_vllm_server(
+                settings.generation_model,
+                base_url=settings.vllm_base_url,
+                api_key=settings.vllm_api_key,
+                timeout=settings.vllm_timeout,
+                prompt=args.prompt,
+            )
+        except RuntimeError as error:
+            parser.error(str(error))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
     if args.command == "chat" and args.top_k is not None:
         if args.top_k <= 0:
             parser.error("--top-k должен быть больше нуля")
