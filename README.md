@@ -215,6 +215,20 @@ rag evaluate-ragas evaluation\ragas_documents_testset.jsonl `
 а `skipped_metrics` явно содержит `answer_relevancy`. Это означает «не измерялось»,
 а не нулевое качество.
 
+`Context Precision` по умолчанию проверяет найденные чанки параллельно. Число
+одновременных запросов к judge задаётся через
+`RAGAS_CONTEXT_PRECISION_CONCURRENCY` (по умолчанию `5`). Если эта диагностическая
+метрика не нужна, её можно полностью отключить:
+
+```powershell
+rag evaluate-ragas evaluation\ragas_documents_testset.jsonl `
+  --skip-context-precision `
+  --output evaluation\ragas-results.json
+```
+
+Тогда `scores.context_precision` будет равен JSON `null`, а имя метрики появится в
+`skipped_metrics`.
+
 В Docker тот же запуск выглядит так:
 
 ```bash
@@ -224,7 +238,8 @@ docker compose run --rm app evaluate-ragas \
   --output /evaluation/ragas-results.json
 ```
 
-Флаг `--skip-answer-relevancy` доступен и при Docker-запуске.
+Флаги `--skip-answer-relevancy` и `--skip-context-precision` доступны и при
+Docker-запуске.
 
 Compose подключает локальный каталог `./evaluation` как `/evaluation`, поэтому входной
 набор доступен контейнеру, а JSON-отчёт сохраняется на хосте.
@@ -264,6 +279,7 @@ rag evaluate-ragas evaluation/testset.example.jsonl --no-artifact-cache
 RAGAS_JUDGE_MODEL=
 RAGAS_THRESHOLD=0.7
 RAGAS_MAX_TOKENS=2048
+RAGAS_CONTEXT_PRECISION_CONCURRENCY=5
 EVALUATION_ARTIFACT_CACHE_ENABLED=true
 EVALUATION_ARTIFACT_CACHE_DIR=evaluation/artifact-cache
 ```
@@ -301,15 +317,17 @@ docker compose run --rm app benchmark \
   --output-dir /evaluation/benchmark-results
 ```
 
-Benchmark также принимает `--skip-answer-relevancy`; метрика будет пропущена и в
-RAGAS, и в DeepEval, чтобы сравнение оставалось симметричным.
+Benchmark также принимает `--skip-answer-relevancy` и `--skip-context-precision`;
+соответствующая метрика будет пропущена и в RAGAS, и в DeepEval, чтобы сравнение
+оставалось симметричным.
 Флаги `--artifact-cache-dir`, `--no-artifact-cache` и `--refresh-artifact-cache`
 работают аналогично. В Docker Compose кэш по умолчанию находится в
 `/evaluation/artifact-cache` и поэтому сохраняется в локальной папке
 `./evaluation/artifact-cache`.
 
-Для быстрой проверки соединения сначала добавьте `--limit 1`. Полный запуск делает
-много последовательных judge-вызовов и на локальной модели может занять заметное время.
+Для быстрой проверки соединения сначала добавьте `--limit 1`. Полный запуск всё равно
+делает много judge-вызовов и на локальной модели может занять заметное время; только
+независимые проверки чанков RAGAS Context Precision выполняются параллельно.
 
 Ответ RAG для каждой пары «конфигурация × вопрос» генерируется один раз. RAGAS и
 DeepEval получают один и тот же `response`, `reference` и список `retrieved_contexts`.
