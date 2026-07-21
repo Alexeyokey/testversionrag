@@ -1,11 +1,13 @@
 import asyncio
+import sys
 from dataclasses import dataclass
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 from rag_app.config import Settings
 from rag_app.evaluation import EvaluationCase
 from rag_app.ragas_evaluation import (
-    _CachedRagasPrompt,
+    _ArtifactCachingLLM,
+    _CachedRagasArtifact,
     _build_vllm_async_client,
     evaluate_with_ragas,
     summarize_ragas,
@@ -43,7 +45,7 @@ class _Scorer:
 
 
 @dataclass
-class _PromptOutput:
+class _StatementOutput:
     statements: list[str]
 
     @classmethod
@@ -51,140 +53,163 @@ class _PromptOutput:
         return cls(statements=list(value["statements"]))
 
 
+@dataclass
+class _VerdictOutput:
+    verdict: int
+
+
 class _Prompt:
-    output_model = _PromptOutput
-
     def __init__(self) -> None:
-        self.generate_calls = 0
-        self.multiple_calls = 0
+        self.calls = 0
 
-    async def generate(self, **kwargs):
-        del kwargs
-        self.generate_calls += 1
-        return _PromptOutput(["Факт из ответа."])
-
-    async def generate_multiple(self, **kwargs):
-        self.multiple_calls += 1
-        return [
-            _PromptOutput([f"Вопрос {index}?"])
-            for index in range(kwargs["n"])
-        ]
+    async def agenerate(self, prompt, output_model):
+        del prompt
+        self.calls += 1
+        if output_model is _StatementOutput:
+            return _StatementOutput(["Факт из ответа."])
+        assert output_model is _VerdictOutput
+        return _VerdictOutput(verdict=1)
 
 
-class _SequentialPrompt(_Prompt):
-    async def generate(self, **kwargs):
-        del kwargs
-        self.generate_calls += 1
-        return _PromptOutput([f"Вопрос {self.generate_calls}?"])
+@dataclass
+class _QuestionOutput:
+    question: str
+    noncommittal: int = 0
+
+    @classmethod
+    def model_validate(cls, value):
+        return cls(
+            question=str(value["question"]),
+            noncommittal=int(value.get("noncommittal", 0)),
+        )
+
+
+class _QuestionLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def agenerate(self, prompt, output_model):
+        del prompt
+        self.calls += 1
+        assert output_model is _QuestionOutput
+        return _QuestionOutput(question=f"Вопрос {self.calls}?")
 
 
 class _ArtifactScorer(_Scorer):
-    def __init__(self, value: float, prompt: _CachedRagasPrompt) -> None:
+    def __init__(
+        self,
+        value: float,
+        llm: _ArtifactCachingLLM,
+        artifact: _CachedRagasArtifact,
+    ) -> None:
         super().__init__(value)
-        self.statement_generator_prompt = prompt
+        self.llm = llm
+        self._artifact_cache_controller = artifact
 
     def score(self, **kwargs):
         self.calls.append(kwargs)
         asyncio.run(
-            self.statement_generator_prompt.generate(
-                llm=object(),
-                data={
-                    "question": kwargs["user_input"],
-                    "answer": kwargs["response"],
-                },
+            self.llm.agenerate(
+                f"{kwargs['user_input']}\n{kwargs['response']}",
+                _StatementOutput,
             )
         )
         return SimpleNamespace(value=self.value)
 
 
-def test_ragas_prompt_cache_reuses_artifacts_but_not_scores(tmp_path) -> None:
+def test_ragas_llm_cache_reuses_statement_artifact(tmp_path) -> None:
     cache = ArtifactCache(tmp_path)
-    prompt = _Prompt()
-    facts = _CachedRagasPrompt(
-        prompt,
+    original_llm = _Prompt()
+    facts = _CachedRagasArtifact(
         cache,
         artifact_name="faithfulness_statements",
         evaluator_config={"judge_model": "local-model"},
         refresh=False,
     )
+    llm = _ArtifactCachingLLM(
+        original_llm,
+        facts,
+        output_model_name="_StatementOutput",
+    )
 
-    first = asyncio.run(
-        facts.generate(llm=object(), data={"question": "Что?", "answer": "Ответ."})
-    )
-    second = asyncio.run(
-        facts.generate(llm=object(), data={"question": "Что?", "answer": "Ответ."})
-    )
+    facts.begin_sample()
+    first = asyncio.run(llm.agenerate("Что?\nОтвет.", _StatementOutput))
+    facts.finish_sample(save=True)
+    facts.begin_sample()
+    second = asyncio.run(llm.agenerate("Что?\nОтвет.", _StatementOutput))
+    facts.finish_sample(save=True)
+
+    # NLI verdict calls use another output model and must always reach the judge.
+    asyncio.run(llm.agenerate("Контекст 1", _VerdictOutput))
+    asyncio.run(llm.agenerate("Контекст 2", _VerdictOutput))
 
     assert first == second
-    assert prompt.generate_calls == 1
+    assert original_llm.calls == 3
     assert facts.cache_hits == 1
     assert facts.last_value == {"statements": ["Факт из ответа."]}
-
-    questions = _CachedRagasPrompt(
-        prompt,
-        cache,
-        artifact_name="answer_relevancy_questions",
-        evaluator_config={"judge_model": "local-model"},
-        refresh=False,
-    )
-    first_questions = asyncio.run(
-        questions.generate_multiple(llm=object(), data={"response": "Ответ."}, n=3)
-    )
-    second_questions = asyncio.run(
-        questions.generate_multiple(llm=object(), data={"response": "Ответ."}, n=3)
-    )
-
-    assert first_questions == second_questions
-    assert prompt.multiple_calls == 1
-    assert questions.cache_hits == 1
-    assert len(questions.last_value) == 3
+    assert cache.writes == 1
 
 
 def test_answer_relevancy_cache_preserves_three_sequential_questions(tmp_path) -> None:
     cache = ArtifactCache(tmp_path)
-    prompt = _SequentialPrompt()
-    questions = _CachedRagasPrompt(
-        prompt,
+    original_llm = _QuestionLLM()
+    questions = _CachedRagasArtifact(
         cache,
         artifact_name="answer_relevancy_questions",
         evaluator_config={"judge_model": "local-model", "strictness": 3},
         refresh=False,
     )
-    call = {"llm": object(), "data": {"response": "Ответ."}}
+    llm = _ArtifactCachingLLM(
+        original_llm,
+        questions,
+        output_model_name="_QuestionOutput",
+    )
 
     questions.begin_sample()
-    generated = [asyncio.run(questions.generate(**call)) for _ in range(3)]
+    generated = [
+        asyncio.run(llm.agenerate("Ответ.", _QuestionOutput))
+        for _ in range(3)
+    ]
     questions.finish_sample(save=True)
 
-    assert [item.statements[0] for item in generated] == [
+    assert [item.question for item in generated] == [
         "Вопрос 1?",
         "Вопрос 2?",
         "Вопрос 3?",
     ]
 
     questions.begin_sample()
-    cached = [asyncio.run(questions.generate(**call)) for _ in range(3)]
+    cached = [
+        asyncio.run(llm.agenerate("Ответ.", _QuestionOutput))
+        for _ in range(3)
+    ]
     questions.finish_sample(save=True)
 
-    assert [item.statements[0] for item in cached] == [
+    assert [item.question for item in cached] == [
         "Вопрос 1?",
         "Вопрос 2?",
         "Вопрос 3?",
     ]
-    assert prompt.generate_calls == 3
+    assert original_llm.calls == 3
     assert questions.cache_hits == 1
+    assert cache.writes == 1
 
 
 def test_ragas_report_marks_cached_artifact_while_recomputing_score(tmp_path) -> None:
     cache = ArtifactCache(tmp_path)
-    cached_prompt = _CachedRagasPrompt(
-        _Prompt(),
+    original_llm = _Prompt()
+    artifact = _CachedRagasArtifact(
         cache,
         artifact_name="faithfulness_statements",
         evaluator_config={"judge_model": "local-model"},
         refresh=False,
     )
-    faithfulness = _ArtifactScorer(0.9, cached_prompt)
+    cached_llm = _ArtifactCachingLLM(
+        original_llm,
+        artifact,
+        output_model_name="_StatementOutput",
+    )
+    faithfulness = _ArtifactScorer(0.9, cached_llm, artifact)
     scorers = {
         "faithfulness": faithfulness,
         "context_recall": _Scorer(0.8),
@@ -218,6 +243,7 @@ def test_ragas_report_marks_cached_artifact_while_recomputing_score(tmp_path) ->
     assert first.cached_artifacts == ()
     assert second.cached_artifacts == ("faithfulness_statements",)
     assert len(faithfulness.calls) == 2
+    assert original_llm.calls == 1
 
 
 def test_ragas_scores_answer_and_context_with_injected_judges() -> None:
@@ -338,7 +364,9 @@ def test_ragas_judge_uses_async_openai_client(monkeypatch) -> None:
         def __init__(self, **kwargs) -> None:
             captured.update(kwargs)
 
-    monkeypatch.setattr("openai.AsyncOpenAI", _AsyncOpenAI)
+    openai_module = ModuleType("openai")
+    openai_module.AsyncOpenAI = _AsyncOpenAI
+    monkeypatch.setitem(sys.modules, "openai", openai_module)
     settings = Settings(
         enable_reranker=False,
         vllm_base_url="http://vllm:8000/v1",

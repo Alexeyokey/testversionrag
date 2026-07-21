@@ -4,7 +4,7 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from rag_app.evaluation import (
     EvaluationCase,
@@ -49,47 +49,39 @@ class RagasEvaluationResult:
     error: str | None = None
 
 
-class _CachedRagasPrompt:
-    """Кэшировать результат одного генеративного шага внутри RAGAS-метрики."""
+class _CachedRagasArtifact:
+    """Cache selected structured LLM outputs, never final metric scores."""
 
     def __init__(
         self,
-        prompt: Any,
         cache: ArtifactCache,
         *,
         artifact_name: str,
         evaluator_config: dict[str, Any],
         refresh: bool,
     ) -> None:
-        self._prompt = prompt
         self._cache = cache
         self.artifact_name = artifact_name
         self._evaluator_config = evaluator_config
         self._refresh = refresh
         self.cache_hits = 0
         self.last_value: Any | None = None
+        self.last_error: str | None = None
         self._session: dict[str, dict[str, Any]] | None = None
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._prompt, name)
-
-    async def generate(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._call("generate", args, kwargs)
-
-    async def generate_multiple(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._call("generate_multiple", args, kwargs)
-
     def begin_sample(self) -> None:
-        """Начать одну оценку и не путать три question-generation вызова с тремя тестами."""
+        """Start one metric evaluation and group its repeated LLM calls."""
         self._session = {}
         self.last_value = None
+        self.last_error = None
 
-    def finish_sample(self, *, save: bool) -> None:
-        """Атомарно сохранить все результаты генерации только после успешной метрики."""
+    def finish_sample(self, *, save: bool) -> str | None:
+        """Persist generated outputs only after the metric finished successfully."""
         session = self._session
         self._session = None
         if not save or session is None:
-            return
+            return None
+        errors: list[str] = []
         for entry in session.values():
             generated = entry["generated"]
             if not generated:
@@ -103,19 +95,25 @@ class _CachedRagasPrompt:
                     inputs=entry["inputs"],
                     value=value,
                 )
-            except OSError:
-                # Невозможность записать оптимизационный кэш не отменяет оценивание.
-                pass
+            except (OSError, TypeError, ValueError) as error:
+                errors.append(f"{type(error).__name__}: {error}")
+        if errors:
+            self.last_error = "; ".join(errors)
+        return self.last_error
 
-    async def _call(
+    async def resolve(
         self,
-        method_name: str,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
+        invoke: Callable[[], Awaitable[Any]],
+        *,
+        inputs: dict[str, Any],
+        output_model: Any,
     ) -> Any:
-        inputs = _prompt_cache_inputs(method_name, args, kwargs)
         if self._session is not None:
-            return await self._call_in_session(method_name, args, kwargs, inputs)
+            return await self._resolve_in_session(
+                invoke,
+                inputs=inputs,
+                output_model=output_model,
+            )
 
         if not self._refresh:
             cached_value = self._cache.get(
@@ -127,12 +125,9 @@ class _CachedRagasPrompt:
             if cached_value is not None:
                 self.cache_hits += 1
                 self.last_value = cached_value
-                return self._restore(
-                    cached_value,
-                    multiple=_expects_multiple(method_name, kwargs),
-                )
+                return _validate_model(output_model, cached_value)
 
-        value = await getattr(self._prompt, method_name)(*args, **kwargs)
+        value = await invoke()
         serialized_value = _to_json_value(value)
         self.last_value = serialized_value
         try:
@@ -143,17 +138,16 @@ class _CachedRagasPrompt:
                 inputs=inputs,
                 value=serialized_value,
             )
-        except OSError:
-            # Невозможность записать оптимизационный кэш не отменяет оценивание.
-            pass
+        except (OSError, TypeError, ValueError) as error:
+            self.last_error = f"{type(error).__name__}: {error}"
         return value
 
-    async def _call_in_session(
+    async def _resolve_in_session(
         self,
-        method_name: str,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
+        invoke: Callable[[], Awaitable[Any]],
+        *,
         inputs: dict[str, Any],
+        output_model: Any,
     ) -> Any:
         assert self._session is not None
         session_key = json.dumps(
@@ -185,35 +179,53 @@ class _CachedRagasPrompt:
 
         cached_value = entry["cached"]
         if cached_value is not None:
-            if _expects_multiple(method_name, kwargs):
-                return self._restore(cached_value, multiple=True)
             if isinstance(cached_value, list):
                 position = int(entry["position"])
                 if position >= len(cached_value):
                     raise RuntimeError(
-                        f"Кэш {self.artifact_name} содержит недостаточно результатов"
+                        f"Артефакт {self.artifact_name} содержит недостаточно результатов"
                     )
                 entry["position"] = position + 1
-                return self._restore(cached_value[position], multiple=False)
+                return _validate_model(output_model, cached_value[position])
             entry["position"] = int(entry["position"]) + 1
-            return self._restore(cached_value, multiple=False)
+            return _validate_model(output_model, cached_value)
 
-        value = await getattr(self._prompt, method_name)(*args, **kwargs)
+        value = await invoke()
         serialized_value = _to_json_value(value)
         entry["generated"].append(serialized_value)
         generated = entry["generated"]
         self.last_value = generated[0] if len(generated) == 1 else list(generated)
         return value
 
-    def _restore(self, value: Any, *, multiple: bool) -> Any:
-        output_model = getattr(self._prompt, "output_model", None)
-        if output_model is None:
-            raise RuntimeError(
-                f"RAGAS prompt {type(self._prompt).__name__} не объявляет output_model"
-            )
-        if multiple:
-            return [_validate_model(output_model, item) for item in value]
-        return _validate_model(output_model, value)
+
+class _ArtifactCachingLLM:
+    """Intercept only one RAGAS structured-output type and delegate every other call."""
+
+    def __init__(
+        self,
+        llm: Any,
+        artifact: _CachedRagasArtifact,
+        *,
+        output_model_name: str,
+    ) -> None:
+        self._llm = llm
+        self._artifact = artifact
+        self._output_model_name = output_model_name
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._llm, name)
+
+    async def agenerate(self, *args: Any, **kwargs: Any) -> Any:
+        output_model = _llm_output_model(args, kwargs)
+        if getattr(output_model, "__name__", None) != self._output_model_name:
+            return await self._llm.agenerate(*args, **kwargs)
+
+        inputs = _llm_artifact_inputs(args, kwargs, output_model)
+        return await self._artifact.resolve(
+            lambda: self._llm.agenerate(*args, **kwargs),
+            inputs=inputs,
+            output_model=output_model,
+        )
 
 
 def _validate_model(model: Any, value: Any) -> Any:
@@ -222,63 +234,59 @@ def _validate_model(model: Any, value: Any) -> Any:
     return model.parse_obj(value)
 
 
-def _expects_multiple(method_name: str, kwargs: dict[str, Any]) -> bool:
-    if method_name == "generate_multiple":
-        return True
-    try:
-        return int(kwargs.get("n", 1)) > 1
-    except (TypeError, ValueError):
-        return False
-
-
-def _prompt_cache_inputs(
-    method_name: str,
+def _llm_output_model(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
+) -> Any | None:
+    if len(args) >= 2:
+        return args[1]
+    return kwargs.get("response_model") or kwargs.get("output_model")
+
+
+def _llm_artifact_inputs(
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    output_model: Any,
 ) -> dict[str, Any]:
-    data = kwargs.get("data")
-    if data is None:
-        # У PydanticPrompt первые позиционные параметры — llm и data.
-        if len(args) >= 2:
-            data = args[1]
-        elif args:
-            data = args[0]
+    prompt = args[0] if args else kwargs.get("prompt")
     return {
-        "method": method_name,
-        "data": _to_json_value(data),
-        "n": kwargs.get("n", 1),
-        "temperature": kwargs.get("temperature"),
-        "stop": _to_json_value(kwargs.get("stop")),
+        "prompt": _to_json_value(prompt),
+        "output_model": (
+            f"{getattr(output_model, '__module__', '')}."
+            f"{getattr(output_model, '__qualname__', repr(output_model))}"
+        ),
     }
 
 
-def _cache_prompt(
+def _cache_llm_artifact(
     scorer: Any,
-    attribute: str,
     cache: ArtifactCache | None,
     *,
     artifact_name: str,
+    output_model_name: str,
     evaluator_config: dict[str, Any],
     refresh: bool,
 ) -> None:
     if cache is None:
         return
-    prompt = getattr(scorer, attribute, None)
-    if prompt is None:
+    llm = getattr(scorer, "llm", None)
+    if llm is None:
         raise RuntimeError(
-            f"Версия RAGAS несовместима с artifact cache: отсутствует {attribute}"
+            f"Версия RAGAS несовместима с artifact cache: "
+            f"у {type(scorer).__name__} отсутствует llm"
         )
-    setattr(
-        scorer,
-        attribute,
-        _CachedRagasPrompt(
-            prompt,
-            cache,
-            artifact_name=artifact_name,
-            evaluator_config=evaluator_config,
-            refresh=refresh,
-        ),
+    artifact = _CachedRagasArtifact(
+        cache,
+        artifact_name=artifact_name,
+        evaluator_config=evaluator_config,
+        refresh=refresh,
     )
+    scorer.llm = _ArtifactCachingLLM(
+        llm,
+        artifact,
+        output_model_name=output_model_name,
+    )
+    scorer._artifact_cache_controller = artifact
 
 
 def build_ragas_scorers(
@@ -329,11 +337,11 @@ def build_ragas_scorers(
 
     faithfulness = Faithfulness(llm=judge)
     cache_config = evaluator_artifact_config(settings, "ragas")
-    _cache_prompt(
+    _cache_llm_artifact(
         faithfulness,
-        "statement_generator_prompt",
         artifact_cache,
         artifact_name="faithfulness_statements",
+        output_model_name="StatementGeneratorOutput",
         evaluator_config=cache_config,
         refresh=refresh_artifact_cache,
     )
@@ -392,11 +400,11 @@ def build_ragas_scorers(
             llm=judge,
             embeddings=ExistingEmbeddingAdapter(embedding_model),
         )
-        _cache_prompt(
+        _cache_llm_artifact(
             answer_relevancy,
-            "question_generation",
             artifact_cache,
             artifact_name="answer_relevancy_questions",
+            output_model_name="AnswerRelevanceOutput",
             evaluator_config={
                 **cache_config,
                 "strictness": getattr(answer_relevancy, "strictness", 3),
@@ -528,11 +536,11 @@ def evaluate_samples_with_ragas(
         cached_artifacts: list[str] = []
         for metric_name in enabled_metric_names:
             scorer = active_scorers[metric_name]
-            artifact_prompt = _artifact_prompt(scorer)
-            cache_hits_before = artifact_prompt.cache_hits if artifact_prompt else 0
+            artifact = _artifact_controller(scorer)
+            cache_hits_before = artifact.cache_hits if artifact else 0
             metric_succeeded = False
-            if artifact_prompt is not None:
-                artifact_prompt.begin_sample()
+            if artifact is not None:
+                artifact.begin_sample()
             try:
                 metric_result = scorer.score(
                     **metric_arguments[metric_name]
@@ -550,12 +558,14 @@ def evaluate_samples_with_ragas(
                 # Ошибка одной метрики не скрывает оценки, полученные от остальных.
                 metric_errors[metric_name] = f"{type(error).__name__}: {error}"
             finally:
-                if artifact_prompt is not None:
-                    artifact_prompt.finish_sample(save=metric_succeeded)
-                    if artifact_prompt.last_value is not None:
-                        artifacts[artifact_prompt.artifact_name] = artifact_prompt.last_value
-                        if artifact_prompt.cache_hits > cache_hits_before:
-                            cached_artifacts.append(artifact_prompt.artifact_name)
+                if artifact is not None:
+                    write_error = artifact.finish_sample(save=metric_succeeded)
+                    if write_error:
+                        metric_errors[f"{metric_name}_artifact_cache"] = write_error
+                    if artifact.last_value is not None:
+                        artifacts[artifact.artifact_name] = artifact.last_value
+                        if artifact.cache_hits > cache_hits_before:
+                            cached_artifacts.append(artifact.artifact_name)
 
         required_scores = [
             scores[metric_name]
@@ -680,9 +690,6 @@ def _failed_result(
     )
 
 
-def _artifact_prompt(scorer: Any) -> _CachedRagasPrompt | None:
-    for attribute in ("statement_generator_prompt", "question_generation"):
-        prompt = getattr(scorer, attribute, None)
-        if isinstance(prompt, _CachedRagasPrompt):
-            return prompt
-    return None
+def _artifact_controller(scorer: Any) -> _CachedRagasArtifact | None:
+    artifact = getattr(scorer, "_artifact_cache_controller", None)
+    return artifact if isinstance(artifact, _CachedRagasArtifact) else None

@@ -292,8 +292,11 @@ def main() -> None:
             if artifact_cache is not None:
                 print(
                     f"Кэш артефактов: {artifact_cache.directory}; "
-                    f"использовано артефактов: {summary['artifact_cache_hits']}"
+                    f"создано: {artifact_cache.writes}; "
+                    f"повторно использовано: {summary['artifact_cache_hits']}"
                 )
+                for cache_error in artifact_cache.write_errors:
+                    print(f"Ошибка записи артефакта: {cache_error}")
             if args.skip_answer_relevancy:
                 print("Answer Relevancy: не измерялась (null)")
             if summary["failed"]:
@@ -348,8 +351,11 @@ def main() -> None:
                 )
                 print(
                     f"Кэш артефактов: {artifact_cache.directory}; "
-                    f"использовано артефактов: {cache_hits}"
+                    f"создано: {artifact_cache.writes}; "
+                    f"повторно использовано: {cache_hits}"
                 )
+                for cache_error in artifact_cache.write_errors:
+                    print(f"Ошибка записи артефакта: {cache_error}")
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         parser.error(str(error))
 

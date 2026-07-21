@@ -36,6 +36,7 @@ def test_artifact_cache_reuses_only_identical_inputs(tmp_path) -> None:
     assert cached == facts
     assert changed is None
     assert cache.hits == 1
+    assert cache.writes == 1
 
 
 def test_artifact_cache_does_not_contain_metric_score_fields(tmp_path) -> None:
@@ -55,3 +56,23 @@ def test_artifact_cache_does_not_contain_metric_score_fields(tmp_path) -> None:
     assert '"score"' not in payload
     assert '"reason"' not in payload
     assert '"passed"' not in payload
+
+
+def test_artifact_cache_reports_write_errors(tmp_path) -> None:
+    blocked_directory = tmp_path / "not-a-directory"
+    blocked_directory.write_text("file", encoding="utf-8")
+    cache = ArtifactCache(blocked_directory)
+
+    try:
+        cache.put(
+            evaluator="ragas",
+            artifact_name="faithfulness_statements",
+            evaluator_config={"judge_model": "local-model"},
+            inputs={"prompt": "test"},
+            value={"statements": ["Факт"]},
+        )
+    except OSError:
+        pass
+
+    assert cache.writes == 0
+    assert cache.write_errors

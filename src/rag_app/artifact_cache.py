@@ -24,6 +24,8 @@ class ArtifactCache:
     def __init__(self, directory: str | Path) -> None:
         self.directory = Path(directory)
         self.hits = 0
+        self.writes = 0
+        self.write_errors: list[str] = []
 
     def get(
         self,
@@ -70,24 +72,29 @@ class ArtifactCache:
             inputs=inputs,
         )
         cache_path = self._entry_path(evaluator, artifact_name, identity)
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "schema_version": CACHE_SCHEMA_VERSION,
-            "identity": identity,
-            "evaluator": evaluator,
-            "artifact": artifact_name,
-            "evaluator_config": dict(evaluator_config),
-            "inputs": _to_json_value(dict(inputs)),
-            "value": _to_json_value(value),
-        }
-        temporary_path = cache_path.with_suffix(
-            f".{os.getpid()}.{uuid4().hex}.tmp"
-        )
-        temporary_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
-            encoding="utf-8",
-        )
-        temporary_path.replace(cache_path)
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "schema_version": CACHE_SCHEMA_VERSION,
+                "identity": identity,
+                "evaluator": evaluator,
+                "artifact": artifact_name,
+                "evaluator_config": dict(evaluator_config),
+                "inputs": _to_json_value(dict(inputs)),
+                "value": _to_json_value(value),
+            }
+            temporary_path = cache_path.with_suffix(
+                f".{os.getpid()}.{uuid4().hex}.tmp"
+            )
+            temporary_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
+                encoding="utf-8",
+            )
+            temporary_path.replace(cache_path)
+        except (OSError, TypeError, ValueError) as error:
+            self.write_errors.append(f"{type(error).__name__}: {error}")
+            raise
+        self.writes += 1
         return cache_path
 
     def _entry_path(self, evaluator: str, artifact_name: str, identity: str) -> Path:
