@@ -28,7 +28,7 @@ class Settings:
     enable_reranker: bool = True
     chunk_size: int = 1024
     chunk_overlap: int = 50
-    docling_chunk_tokens: int = 512
+    docling_chunk_tokens: int = 1024
     embedding_batch_size: int = 32
     top_k: int = 3
     candidate_k: int = 8

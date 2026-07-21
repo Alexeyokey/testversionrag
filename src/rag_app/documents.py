@@ -234,7 +234,7 @@ class DocumentProcessor:
         self,
         chunk_size: int | None = None,
         chunk_overlap: int | None = None,
-        docling_chunk_tokens: int = 512,
+        docling_chunk_tokens: int = 1024,
         embedding_model: str | None = None,
         trust_remote_code: bool | None = None,
         tokenizer: PreTrainedTokenizerBase | None = None,

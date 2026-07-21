@@ -17,6 +17,14 @@ def test_default_text_chunk_size_is_1024(monkeypatch) -> None:
     assert settings.chunk_size == 1024
 
 
+def test_default_docling_chunk_size_is_1024(monkeypatch) -> None:
+    monkeypatch.delenv("RAG_DOCLING_CHUNK_TOKENS", raising=False)
+
+    settings = Settings.from_env()
+
+    assert settings.docling_chunk_tokens == 1024
+
+
 def test_legacy_metric_cache_environment_variables_are_ignored(monkeypatch) -> None:
     monkeypatch.delenv("EVALUATION_ARTIFACT_CACHE_ENABLED", raising=False)
     monkeypatch.delenv("EVALUATION_ARTIFACT_CACHE_DIR", raising=False)
