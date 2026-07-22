@@ -12,6 +12,7 @@ openpyxl>=3.1
 openai>=1.0
 pandas>=2.2
 pypdf>=5.0
+prompt-toolkit>=3.0,<4
 python-dotenv>=1.0
 python-docx>=1.1
 qdrant-client>=1.12

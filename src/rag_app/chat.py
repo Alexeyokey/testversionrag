@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -124,8 +125,18 @@ def run_interactive(
     *,
     stream: bool = False,
     max_history_turns: int = 6,
+    read_input: Callable[[str], str] | None = None,
 ) -> None:
     session = ChatSession(service, max_history_turns=max_history_turns)
+    if read_input is None:
+        # PromptSession enables bracketed paste. A pasted traceback containing
+        # newlines stays in one editable buffer instead of becoming a queue of
+        # independent input() calls.
+        from prompt_toolkit import PromptSession
+
+        prompt_session: PromptSession[str] = PromptSession(multiline=False)
+        read_input = prompt_session.prompt
+
     print(
         "\n================================================\n"
         "  Интерактивный RAG-чат\n"
@@ -135,7 +146,7 @@ def run_interactive(
 
     while True:
         try:
-            question = input("Вы: ").strip()
+            question = read_input("Вы: ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nЧат завершён.")
             break
@@ -158,10 +169,24 @@ def run_interactive(
         print("\nАссистент: ", end="", flush=True)
         try:
             if stream:
+                stream_started_at = perf_counter()
+                first_chunk_seconds: float | None = None
                 reply = session.ask_stream(question)
                 for chunk in reply.chunks:
+                    if first_chunk_seconds is None:
+                        first_chunk_seconds = perf_counter() - stream_started_at
                     print(chunk, end="", flush=True)
+                total_seconds = perf_counter() - stream_started_at
                 print()
+                first_chunk_label = (
+                    f"{first_chunk_seconds:.3f} с"
+                    if first_chunk_seconds is not None
+                    else "нет данных"
+                )
+                print(
+                    "[Время stream] первый фрагмент: "
+                    f"{first_chunk_label}; полный ответ: {total_seconds:.3f} с"
+                )
             else:
                 reply = session.ask(question)
                 print(reply.answer)
