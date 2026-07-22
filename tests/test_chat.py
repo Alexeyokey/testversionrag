@@ -86,7 +86,7 @@ def test_interactive_multiline_paste_is_processed_as_one_question() -> None:
     assert service.questions == [pasted_traceback]
 
 
-def test_stream_chat_prints_first_chunk_and_total_time(capsys) -> None:
+def test_stream_chat_prints_retrieval_and_generation_time(capsys) -> None:
     service = _Service()
     inputs = iter(("Вопрос", "/quit"))
 
@@ -97,5 +97,7 @@ def test_stream_chat_prints_first_chunk_and_total_time(capsys) -> None:
     )
 
     output = capsys.readouterr().out
-    assert "[Время stream] первый фрагмент:" in output
-    assert "полный ответ:" in output
+    assert "[Время stream] контекст:" in output
+    assert "первый фрагмент генерации:" in output
+    assert "генерация:" in output
+    assert "всего:" in output

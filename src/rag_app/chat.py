@@ -171,16 +171,20 @@ def run_interactive(
         print("\nАссистент: ", end="", flush=True)
         try:
             if stream:
-                # Первый фрагмент включает поиск и prefill — эту паузу видит
-                # пользователь.
-                stream_started_at = perf_counter()
-                first_chunk_seconds: float | None = None
+                retrieval_started_at = perf_counter()
                 reply = session.ask_stream(question)
+                retrieval_seconds = perf_counter() - retrieval_started_at
+
+                # stream_answer() начинает HTTP-запрос при первой итерации,
+                # поэтому отсюда измеряется только prefill и генерация vLLM.
+                generation_started_at = perf_counter()
+                first_chunk_seconds: float | None = None
                 for chunk in reply.chunks:
                     if first_chunk_seconds is None:
-                        first_chunk_seconds = perf_counter() - stream_started_at
+                        first_chunk_seconds = perf_counter() - generation_started_at
                     print(chunk, end="", flush=True)
-                total_seconds = perf_counter() - stream_started_at
+                generation_seconds = perf_counter() - generation_started_at
+                total_seconds = retrieval_seconds + generation_seconds
                 print()
                 first_chunk_label = (
                     f"{first_chunk_seconds:.3f} с"
@@ -188,8 +192,10 @@ def run_interactive(
                     else "нет данных"
                 )
                 print(
-                    "[Время stream] первый фрагмент: "
-                    f"{first_chunk_label}; полный ответ: {total_seconds:.3f} с"
+                    "[Время stream] контекст: "
+                    f"{retrieval_seconds:.3f} с; первый фрагмент генерации: "
+                    f"{first_chunk_label}; генерация: {generation_seconds:.3f} с; "
+                    f"всего: {total_seconds:.3f} с"
                 )
             else:
                 reply = session.ask(question)
