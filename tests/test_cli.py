@@ -37,12 +37,31 @@ def test_evaluation_accepts_context_precision_skip_flag() -> None:
     ragas_args = parser.parse_args(
         ["evaluate-ragas", "testset.jsonl", "--skip-context-precision"]
     )
-    benchmark_args = parser.parse_args(
-        ["benchmark", "testset.jsonl", "--skip-context-precision"]
+    tuning_args = parser.parse_args(
+        ["tune-retrieval", "testset.jsonl", "--skip-context-precision"]
     )
 
     assert ragas_args.skip_context_precision is True
-    assert benchmark_args.skip_context_precision is True
+    assert tuning_args.skip_context_precision is True
+
+
+def test_retrieval_tuning_accepts_custom_vector_weights() -> None:
+    parser = _build_parser()
+
+    args = parser.parse_args(
+        [
+            "tune-retrieval",
+            "testset.jsonl",
+            "--vector-weights",
+            "0.2",
+            "0.4",
+            "0.6",
+            "0.8",
+        ]
+    )
+
+    assert args.command == "tune-retrieval"
+    assert args.vector_weights == [0.2, 0.4, 0.6, 0.8]
 
 
 @pytest.mark.parametrize(

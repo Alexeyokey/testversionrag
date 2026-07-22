@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+from rag_app.artifact_cache import ArtifactCache
 from rag_app.deepeval_evaluation import (
     DeepEvalEvaluationResult,
     build_deepeval_scorers,
@@ -14,15 +15,12 @@ from rag_app.deepeval_evaluation import (
 )
 from rag_app.evaluation import (
     JUDGE_METRICS,
-    REQUIRED_JUDGE_METRICS,
     EvaluationCase,
     RagEvaluationSample,
     collect_rag_samples,
 )
-from rag_app.artifact_cache import ArtifactCache
 from rag_app.ragas_evaluation import (
     RagasEvaluationResult,
-    build_ragas_scorers,
     evaluate_samples_with_ragas,
     summarize_ragas,
 )
@@ -33,54 +31,57 @@ if TYPE_CHECKING:
 
 
 METRIC_NAMES = JUDGE_METRICS
+TUNING_METRICS = ("context_recall", "context_precision", "answer_accuracy")
+DEFAULT_VECTOR_WEIGHTS = (0.2, 0.4, 0.5, 0.6, 0.8)
 
 
 @dataclass(frozen=True, slots=True)
-class RagConfiguration:
+class RetrievalWeightConfiguration:
     name: str
     description: str
     vector_weight: float
     bm25_weight: float
-    enable_reranker: bool
-    top_k: int = 3
-    candidate_k: int = 8
 
 
-DEFAULT_CONFIGURATIONS = (
-    RagConfiguration(
-        name="vector_only",
-        description="Только dense vector search",
-        vector_weight=1.0,
-        bm25_weight=0.0,
-        enable_reranker=False,
-    ),
-    RagConfiguration(
-        name="bm25_only",
-        description="Только лексический BM25",
-        vector_weight=0.0,
-        bm25_weight=1.0,
-        enable_reranker=False,
-    ),
-    RagConfiguration(
-        name="hybrid",
-        description="Vector + BM25 через weighted RRF",
-        vector_weight=0.6,
-        bm25_weight=0.4,
-        enable_reranker=False,
-    ),
-    RagConfiguration(
-        name="hybrid_reranker",
-        description="Vector + BM25 + CrossEncoder reranker",
-        vector_weight=0.6,
-        bm25_weight=0.4,
-        enable_reranker=True,
-    ),
-)
+def build_weight_configurations(
+    vector_weights: tuple[float, ...] = DEFAULT_VECTOR_WEIGHTS,
+) -> tuple[RetrievalWeightConfiguration, ...]:
+    """Построить hybrid-конфигурации; BM25 получает вес, дополняющий vector до 1."""
+    if len(vector_weights) < 4:
+        raise ValueError("Для подбора весов требуется минимум 4 значения")
+    if len(set(vector_weights)) != len(vector_weights):
+        raise ValueError("Веса vector search не должны повторяться")
+
+    configurations: list[RetrievalWeightConfiguration] = []
+    for vector_weight in vector_weights:
+        if not 0 < vector_weight < 1:
+            raise ValueError(
+                "Каждый вес vector search должен быть строго между 0 и 1: "
+                "отдельные vector-only и BM25-only режимы не используются"
+            )
+        bm25_weight = round(1.0 - vector_weight, 10)
+        vector_percent = round(vector_weight * 100)
+        bm25_percent = round(bm25_weight * 100)
+        configurations.append(
+            RetrievalWeightConfiguration(
+                name=f"hybrid_v{vector_percent}_b{bm25_percent}",
+                description=(
+                    f"Hybrid weighted RRF: vector {vector_weight:.2f}, "
+                    f"BM25 {bm25_weight:.2f}"
+                ),
+                vector_weight=vector_weight,
+                bm25_weight=bm25_weight,
+            )
+        )
+    return tuple(configurations)
+
+
+DEFAULT_WEIGHT_CONFIGURATIONS = build_weight_configurations()
 
 
 @dataclass(frozen=True, slots=True)
-class BenchmarkConfigurationResult:
-    configuration: RagConfiguration
+class RetrievalTuningResult:
+    configuration: RetrievalWeightConfiguration
     samples: tuple[RagEvaluationSample, ...]
     ragas_results: tuple[RagasEvaluationResult, ...]
     deepeval_results: tuple[DeepEvalEvaluationResult, ...]
@@ -91,12 +92,14 @@ class BenchmarkConfigurationResult:
 ServiceFactory = Callable[["Settings"], "RagService"]
 
 
-def run_benchmark(
+def run_retrieval_tuning(
     settings: Settings,
     cases: list[EvaluationCase],
     *,
     threshold: float | None = None,
-    configurations: tuple[RagConfiguration, ...] = DEFAULT_CONFIGURATIONS,
+    configurations: tuple[
+        RetrievalWeightConfiguration, ...
+    ] = DEFAULT_WEIGHT_CONFIGURATIONS,
     service_factory: ServiceFactory | None = None,
     ragas_scorers: dict[str, Any] | None = None,
     deepeval_scorers: dict[str, Any] | None = None,
@@ -106,39 +109,23 @@ def run_benchmark(
     include_context_precision: bool = True,
     artifact_cache: ArtifactCache | None = None,
     refresh_artifact_cache: bool = False,
-) -> list[BenchmarkConfigurationResult]:
-    """Прогнать четыре RAG-конфигурации и оценить одни ответы двумя инструментами."""
+) -> list[RetrievalTuningResult]:
+    """Подобрать баланс vector/BM25, не меняя остальные параметры RAG."""
     if len(configurations) < 4:
-        raise ValueError("Для сравнительного эксперимента требуется минимум 4 конфигурации")
+        raise ValueError("Для подбора весов требуется минимум 4 конфигурации")
     if not cases:
         raise ValueError("Синтетический тестовый набор пуст")
 
     resolved_threshold = settings.ragas_threshold if threshold is None else threshold
-    shared_embedding_model = None
+    shared_service = None
     if service_factory is None:
-        from rag_app.embeddings import EmbeddingModel
         from rag_app.service import RagService
 
-        shared_embedding_model = EmbeddingModel(
-            settings.embedding_model,
-            batch_size=settings.embedding_batch_size,
-            trust_remote_code=settings.trust_remote_code,
-        )
+        shared_service = RagService(settings)
 
-        def service_factory(config_settings: Settings) -> RagService:
-            return RagService(
-                config_settings,
-                embedding_model=shared_embedding_model,
-            )
-
-    active_ragas_scorers = ragas_scorers or build_ragas_scorers(
-        settings,
-        shared_embedding_model,
-        include_answer_relevancy=include_answer_relevancy,
-        include_context_precision=include_context_precision,
-        artifact_cache=artifact_cache,
-        refresh_artifact_cache=refresh_artifact_cache,
-    )
+    # Production RAGAS scorers are built inside each evaluation event loop.
+    # Injected test scorers remain reusable because they do not own AsyncOpenAI.
+    active_ragas_scorers = ragas_scorers
     active_deepeval_scorers = deepeval_scorers or build_deepeval_scorers(
         settings,
         threshold=resolved_threshold,
@@ -146,7 +133,7 @@ def run_benchmark(
         include_context_precision=include_context_precision,
     )
 
-    benchmark_results: list[BenchmarkConfigurationResult] = []
+    tuning_results: list[RetrievalTuningResult] = []
     for configuration in configurations:
         question_progress: Callable[[str], None] | None = None
         if progress:
@@ -163,11 +150,16 @@ def run_benchmark(
             settings,
             vector_weight=configuration.vector_weight,
             bm25_weight=configuration.bm25_weight,
-            enable_reranker=configuration.enable_reranker,
-            top_k=configuration.top_k,
-            candidate_k=configuration.candidate_k,
         )
-        service = service_factory(config_settings)
+        if shared_service is not None:
+            shared_service.set_retrieval_weights(
+                vector_weight=configuration.vector_weight,
+                bm25_weight=configuration.bm25_weight,
+            )
+            service = shared_service
+        else:
+            assert service_factory is not None
+            service = service_factory(config_settings)
         samples = collect_rag_samples(
             service,
             cases,
@@ -180,6 +172,7 @@ def run_benchmark(
             settings,
             threshold=resolved_threshold,
             scorers=active_ragas_scorers,
+            embedding_model=getattr(service, "embedding_model", None),
             include_answer_relevancy=include_answer_relevancy,
             include_context_precision=include_context_precision,
             artifact_cache=artifact_cache,
@@ -198,8 +191,8 @@ def run_benchmark(
             include_context_precision=include_context_precision,
             progress=question_progress,
         )
-        benchmark_results.append(
-            BenchmarkConfigurationResult(
+        tuning_results.append(
+            RetrievalTuningResult(
                 configuration=configuration,
                 samples=tuple(samples),
                 ragas_results=tuple(ragas_results),
@@ -214,19 +207,41 @@ def run_benchmark(
         if progress:
             progress(f"[{configuration.name}] готово")
 
-    return benchmark_results
+    return tuning_results
 
 
 def comparison_rows(
-    results: list[BenchmarkConfigurationResult],
+    results: list[RetrievalTuningResult],
 ) -> list[dict[str, Any]]:
-    """Преобразовать результаты в плоские строки «конфигурации × метрики»."""
+    """Преобразовать результаты в строки «веса hybrid retrieval × метрики»."""
     rows: list[dict[str, Any]] = []
     for result in results:
         row: dict[str, Any] = {
             "configuration": result.configuration.name,
             "description": result.configuration.description,
+            "vector_weight": result.configuration.vector_weight,
+            "bm25_weight": result.configuration.bm25_weight,
         }
+        retrieval_values = [
+            sample.retrieval_seconds
+            for sample in result.samples
+            if sample.retrieval_seconds is not None
+        ]
+        generation_values = [
+            sample.generation_seconds
+            for sample in result.samples
+            if sample.generation_seconds is not None
+        ]
+        row["retrieval_mean_seconds"] = (
+            sum(retrieval_values) / len(retrieval_values)
+            if retrieval_values
+            else None
+        )
+        row["generation_mean_seconds"] = (
+            sum(generation_values) / len(generation_values)
+            if generation_values
+            else None
+        )
         for tool_name, summary in (
             ("ragas", result.ragas_summary),
             ("deepeval", result.deepeval_summary),
@@ -237,24 +252,22 @@ def comparison_rows(
                 )
             row[f"{tool_name}_mean"] = summary.get("mean_score")
 
-        available_scores = [
+        tuning_scores = [
             float(row[f"{tool_name}_{metric_name}"])
             for tool_name in ("ragas", "deepeval")
-            for metric_name in REQUIRED_JUDGE_METRICS
+            for metric_name in TUNING_METRICS
             if row[f"{tool_name}_{metric_name}"] is not None
         ]
-        row["combined_mean"] = (
-            sum(available_scores) / len(available_scores)
-            if available_scores
-            else None
+        row["tuning_score"] = (
+            sum(tuning_scores) / len(tuning_scores) if tuning_scores else None
         )
         rows.append(row)
     return rows
 
 
-def write_benchmark_reports(
+def write_retrieval_tuning_reports(
     output_directory: str | Path,
-    results: list[BenchmarkConfigurationResult],
+    results: list[RetrievalTuningResult],
     settings: Settings,
 ) -> dict[str, Path]:
     """Сохранить подробный JSON, плоский CSV и человекочитаемый Markdown."""
@@ -262,7 +275,7 @@ def write_benchmark_reports(
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = comparison_rows(results)
 
-    json_path = output_dir / "benchmark-details.json"
+    json_path = output_dir / "retrieval-tuning-details.json"
     json_path.write_text(
         json.dumps(
             {
@@ -280,18 +293,25 @@ def write_benchmark_reports(
         encoding="utf-8",
     )
 
-    csv_path = output_dir / "benchmark-comparison.csv"
-    fieldnames = ["configuration", "description"] + [
+    csv_path = output_dir / "retrieval-weights.csv"
+    fieldnames = [
+        "configuration",
+        "description",
+        "vector_weight",
+        "bm25_weight",
+        "retrieval_mean_seconds",
+        "generation_mean_seconds",
+    ] + [
         f"{tool_name}_{metric_name}"
         for tool_name in ("ragas", "deepeval")
         for metric_name in METRIC_NAMES
-    ] + ["ragas_mean", "deepeval_mean", "combined_mean"]
+    ] + ["ragas_mean", "deepeval_mean", "tuning_score"]
     with csv_path.open("w", encoding="utf-8-sig", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
-    markdown_path = output_dir / "benchmark-report.md"
+    markdown_path = output_dir / "retrieval-tuning-report.md"
     markdown_path.write_text(_markdown_report(rows), encoding="utf-8")
     return {
         "json": json_path,
@@ -308,18 +328,24 @@ def _markdown_report(rows: list[dict[str, Any]]) -> str:
         "answer_accuracy": "Answer Accuracy",
         "answer_relevancy": "Answer Relevancy",
     }
-    headers = ["Конфигурация"] + [
+    headers = [
+        "Конфигурация",
+        "Vector",
+        "BM25",
+        "Retrieval, с",
+        "Generation, с",
+    ] + [
         f"{tool} {metric_titles[metric]}"
         for tool in ("RAGAS", "DeepEval")
         for metric in METRIC_NAMES
-    ] + ["Среднее"]
+    ] + ["Tuning score"]
 
     lines = [
-        "# Сравнение RAGAS и DeepEval",
+        "# Подбор весов гибридного поиска",
         "",
-        "Обе библиотеки оценивали одинаковые ответы и одинаковый retrieval context. "
-        "Абсолютные значения между библиотеками не тождественны: сравнивать следует "
-        "общий тренд и ранжирование конфигураций.",
+        "Во всех конфигурациях используются одновременно vector search и BM25. "
+        "Reranker, top-k и остальные параметры остаются неизменными; меняются только "
+        "веса источников в weighted RRF.",
         "",
         "## Метрики",
         "",
@@ -344,6 +370,11 @@ def _markdown_report(rows: list[dict[str, Any]]) -> str:
             "метрики: отображаются в отчёте, но не определяют passed и основное "
             "среднее."
         ),
+        (
+            "- **Tuning score** — среднее Context Recall, Context Precision и "
+            "Answer Accuracy из доступных оценок RAGAS и DeepEval; используется "
+            "только для выбора весов retrieval."
+        ),
         "",
         "## Сводная таблица",
         "",
@@ -351,27 +382,34 @@ def _markdown_report(rows: list[dict[str, Any]]) -> str:
         "| " + " | ".join(["---"] + ["---:"] * (len(headers) - 1)) + " |",
     ]
     for row in rows:
-        values = [row["configuration"]]
+        values = [
+            row["configuration"],
+            f"{float(row['vector_weight']):.2f}",
+            f"{float(row['bm25_weight']):.2f}",
+            _format_seconds(row["retrieval_mean_seconds"]),
+            _format_seconds(row["generation_mean_seconds"]),
+        ]
         values.extend(
             _format_score(row[f"{tool}_{metric}"])
             for tool in ("ragas", "deepeval")
             for metric in METRIC_NAMES
         )
-        values.append(_format_score(row["combined_mean"]))
+        values.append(_format_score(row["tuning_score"]))
         lines.append("| " + " | ".join(values) + " |")
 
-    valid_rows = [row for row in rows if row["combined_mean"] is not None]
+    valid_rows = [row for row in rows if row["tuning_score"] is not None]
     lines.extend(["", "## Выводы", ""])
     if valid_rows:
-        best = max(valid_rows, key=lambda row: float(row["combined_mean"]))
+        best = max(valid_rows, key=lambda row: float(row["tuning_score"]))
         lines.append(
-            f"Лучшая конфигурация по среднему обязательных оценок — "
-            f"**{best['configuration']}** ({float(best['combined_mean']):.3f})."
+            f"Лучший баланс — **vector {float(best['vector_weight']):.2f} / "
+            f"BM25 {float(best['bm25_weight']):.2f}** "
+            f"(tuning score {float(best['tuning_score']):.3f})."
         )
     else:
         lines.append(
             "Победитель не определён: judge-метрики не вернули числовых результатов. "
-            "Проверьте ошибки в benchmark-details.json."
+            "Проверьте ошибки в retrieval-tuning-details.json."
         )
     lines.extend(
         [
@@ -386,9 +424,9 @@ def _markdown_report(rows: list[dict[str, Any]]) -> str:
                 "judge-модели."
             ),
             (
-                "- Для выбора RAG-конфигурации ориентируйтесь на согласованный рост "
-                "метрик обеих библиотек, а расхождения проверяйте по причинам и "
-                "подробным результатам каждого вопроса."
+                "- После выбора результата перенесите его vector/BM25 weights в "
+                "RAG_VECTOR_WEIGHT и RAG_BM25_WEIGHT, затем перепроверьте на "
+                "отложенном наборе вопросов."
             ),
             "",
         ]
@@ -398,3 +436,7 @@ def _markdown_report(rows: list[dict[str, Any]]) -> str:
 
 def _format_score(value: Any) -> str:
     return "—" if value is None else f"{float(value):.3f}"
+
+
+def _format_seconds(value: Any) -> str:
+    return "—" if value is None else f"{float(value):.4f}"

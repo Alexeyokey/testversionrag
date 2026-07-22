@@ -153,44 +153,54 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_artifact_cache_arguments(ragas_parser)
 
-    benchmark_parser = subparsers.add_parser(
-        "benchmark",
-        help="Сравнить 4 RAG-конфигурации через RAGAS и DeepEval",
+    tuning_parser = subparsers.add_parser(
+        "tune-retrieval",
+        help="Подобрать веса vector/BM25 для гибридного поиска",
     )
-    benchmark_parser.add_argument(
+    tuning_parser.add_argument(
         "testset",
         type=Path,
-        help="Синтетический JSONL-набор с question и reference",
+        help="JSONL-набор с question и reference для подбора весов",
     )
-    benchmark_parser.add_argument(
+    tuning_parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("evaluation/benchmark-results"),
+        default=Path("evaluation/retrieval-tuning-results"),
         help="Каталог для JSON, CSV и Markdown-отчётов",
     )
-    benchmark_parser.add_argument(
+    tuning_parser.add_argument(
+        "--vector-weights",
+        type=float,
+        nargs="+",
+        default=None,
+        help=(
+            "Минимум 4 веса vector search строго между 0 и 1; "
+            "вес BM25 рассчитывается как 1 - vector"
+        ),
+    )
+    tuning_parser.add_argument(
         "--limit",
         type=int,
         default=None,
         help="Использовать только первые N вопросов",
     )
-    benchmark_parser.add_argument(
+    tuning_parser.add_argument(
         "--threshold",
         type=float,
         default=None,
         help="Минимальный балл обязательной метрики от 0 до 1",
     )
-    benchmark_parser.add_argument(
+    tuning_parser.add_argument(
         "--skip-answer-relevancy",
         action="store_true",
         help="Не вычислять Answer Relevancy в RAGAS и DeepEval",
     )
-    benchmark_parser.add_argument(
+    tuning_parser.add_argument(
         "--skip-context-precision",
         action="store_true",
         help="Не вычислять Context Precision в RAGAS и DeepEval",
     )
-    _add_artifact_cache_arguments(benchmark_parser)
+    _add_artifact_cache_arguments(tuning_parser)
     return parser
 
 
@@ -237,7 +247,9 @@ def main() -> None:
     # Heavy retrieval dependencies are imported only after CLI arguments are valid.
     from rag_app.service import RagService
 
-    service = RagService(settings)
+    # Подбор весов сам создаёт сервисы с каждой конфигурацией; базовый экземпляр
+    # здесь был бы лишним и не участвовал бы ни в одном запросе.
+    service = None if args.command == "tune-retrieval" else RagService(settings)
     try:
         if args.command == "index":
             count = service.index(args.source, recreate=args.recreate)
@@ -328,6 +340,17 @@ def main() -> None:
                 f"{summary['passed']}/{summary['total']} пройдено; "
                 f"средний балл: {mean_label}"
             )
+            timings = summary["timings"]
+            if timings["retrieval_mean_seconds"] is not None:
+                print(
+                    "Среднее время retrieval: "
+                    f"{float(timings['retrieval_mean_seconds']):.4f} с"
+                )
+            if timings["generation_mean_seconds"] is not None:
+                print(
+                    "Среднее время generation: "
+                    f"{float(timings['generation_mean_seconds']):.4f} с"
+                )
             print(f"Отчёт: {report_path}")
             if artifact_cache is not None:
                 print(
@@ -343,11 +366,12 @@ def main() -> None:
                 print("Context Precision: не измерялась (null)")
             if summary["failed"]:
                 raise SystemExit(1)
-        elif args.command == "benchmark":
-            from rag_app.benchmark import (
+        elif args.command == "tune-retrieval":
+            from rag_app.retrieval_tuning import (
+                build_weight_configurations,
                 comparison_rows,
-                run_benchmark,
-                write_benchmark_reports,
+                run_retrieval_tuning,
+                write_retrieval_tuning_reports,
             )
             from rag_app.evaluation import load_cases
 
@@ -362,28 +386,51 @@ def main() -> None:
                 else args.threshold
             )
             artifact_cache = _artifact_cache_from_args(args, settings)
-            results = run_benchmark(
+            configurations = (
+                build_weight_configurations(tuple(args.vector_weights))
+                if args.vector_weights is not None
+                else build_weight_configurations()
+            )
+            results = run_retrieval_tuning(
                 settings,
                 cases,
                 threshold=threshold,
+                configurations=configurations,
                 include_answer_relevancy=not args.skip_answer_relevancy,
                 include_context_precision=not args.skip_context_precision,
                 progress=print,
                 artifact_cache=artifact_cache,
                 refresh_artifact_cache=args.refresh_artifact_cache,
             )
-            report_paths = write_benchmark_reports(
+            report_paths = write_retrieval_tuning_reports(
                 args.output_dir,
                 results,
                 settings,
             )
             rows = comparison_rows(results)
-            valid_rows = [row for row in rows if row["combined_mean"] is not None]
+            valid_rows = [row for row in rows if row["tuning_score"] is not None]
             if valid_rows:
-                best = max(valid_rows, key=lambda row: float(row["combined_mean"]))
+                best = max(valid_rows, key=lambda row: float(row["tuning_score"]))
                 print(
-                    "Лучшая конфигурация: "
-                    f"{best['configuration']} ({float(best['combined_mean']):.3f})"
+                    "Лучшие веса: "
+                    f"vector={float(best['vector_weight']):.2f}, "
+                    f"BM25={float(best['bm25_weight']):.2f} "
+                    f"(tuning score {float(best['tuning_score']):.3f})"
+                )
+                if best["retrieval_mean_seconds"] is not None:
+                    print(
+                        "Среднее время retrieval: "
+                        f"{float(best['retrieval_mean_seconds']):.4f} с"
+                    )
+                if best["generation_mean_seconds"] is not None:
+                    print(
+                        "Среднее время generation: "
+                        f"{float(best['generation_mean_seconds']):.4f} с"
+                    )
+                print(
+                    "Добавьте в .env:\n"
+                    f"RAG_VECTOR_WEIGHT={float(best['vector_weight']):.2f}\n"
+                    f"RAG_BM25_WEIGHT={float(best['bm25_weight']):.2f}"
                 )
             for report_name, report_path in report_paths.items():
                 print(f"{report_name}: {report_path}")
