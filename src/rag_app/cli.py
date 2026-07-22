@@ -100,6 +100,36 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Не загружать поисковые модели до первого вопроса",
     )
 
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Запустить HTTP API с одним постоянно загруженным RAG-сервисом",
+    )
+    serve_parser.add_argument("--host", default="0.0.0.0")
+    serve_parser.add_argument("--port", type=int, default=8080)
+    serve_parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=Path("data"),
+        help="Корневая папка, внутри которой API разрешает индексировать файлы",
+    )
+    serve_parser.add_argument(
+        "--history-turns",
+        type=int,
+        default=6,
+        help="Количество последних пар вопрос/ответ для каждой API-сессии",
+    )
+    serve_parser.add_argument(
+        "--max-concurrent-queries",
+        type=int,
+        default=2,
+        help="Максимум одновременных RAG-запросов (по умолчанию: 2)",
+    )
+    serve_parser.add_argument(
+        "--no-warmup",
+        action="store_true",
+        help="Не загружать embedding-модель и reranker при запуске API",
+    )
+
     evaluate_parser = subparsers.add_parser(
         "evaluate",
         help="Запустить простой набор проверок RAG",
@@ -279,6 +309,18 @@ def main() -> None:
                 service,
                 stream=args.stream,
                 max_history_turns=args.history_turns,
+            )
+        elif args.command == "serve":
+            from rag_app.api import serve_api
+
+            serve_api(
+                service,
+                host=args.host,
+                port=args.port,
+                data_root=args.data_root,
+                max_history_turns=args.history_turns,
+                max_concurrent_queries=args.max_concurrent_queries,
+                warmup=not args.no_warmup,
             )
         elif args.command == "evaluate":
             from rag_app.evaluation import evaluate, load_cases, summarize, write_report
