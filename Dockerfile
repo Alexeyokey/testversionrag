@@ -3,15 +3,18 @@
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    CC=gcc \
+    CXX=g++
 
 WORKDIR /app
 
-# Docling обрабатывает PDF через библиотеки компьютерного зрения. В базовом
-# python:3.11-slim нет их системных зависимостей, из-за чего загрузка PDF падает
-# с ошибками libxcb.so.1/libGL.so.1 ещё до создания чанков.
+# Docling нужны системные библиотеки компьютерного зрения. Triton при первом
+# GPU-запуске embeddings собирает launcher-модуль, поэтому компилятор нужен
+# не только во время сборки образа, но и внутри запущенного контейнера.
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends \
+        build-essential \
         libgl1 \
         libglib2.0-0 \
         libsm6 \
