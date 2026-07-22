@@ -135,8 +135,11 @@ docker compose up -d qdrant vllm
 docker compose run --rm -it app chat --stream
 ```
 
-Доступные команды внутри чата: `/stats`, `/clear`, `/quit`. `/clear` удаляет только
-историю разговора; загруженные embedding-модель, reranker и индекс остаются в памяти.
+Доступные команды внутри чата: `/stats`, `/clear`, `/quit`. Многострочная вставка
+сохраняется как один редактируемый запрос и не запускает каждую строку отдельно.
+В режиме `--stream` после ответа выводятся время до первого фрагмента и полное время
+ответа. `/clear` удаляет только историю разговора; загруженные embedding-модель,
+reranker и индекс остаются в памяти.
 Флаг `--no-warmup` откладывает их первую загрузку до первого вопроса. Qwen работает
 в отдельном постоянно запущенном контейнере `vllm` и между вопросами не перезапускается.
 
@@ -327,15 +330,21 @@ EVALUATION_ARTIFACT_CACHE_DIR=evaluation/artifact-cache
 последовательно одной моделью. RAGAS использует структурированные ответы OpenAI API;
 выбранная модель и версия vLLM должны поддерживать JSON schema/structured output.
 
-### Сравнение 4 конфигураций через RAGAS и DeepEval
+### Подбор весов гибридного поиска через RAGAS и DeepEval
 
 В проект включены фиктивный корпус `evaluation/synthetic_corpus` и 12 эталонных
-вопросов `evaluation/synthetic_testset.jsonl`. Эксперимент сравнивает:
+вопросов `evaluation/synthetic_testset.jsonl`. Команда подбирает баланс vector/BM25
+в weighted RRF. По умолчанию проверяются пять сочетаний:
 
-1. `vector_only` — только dense vector search;
-2. `bm25_only` — только лексический BM25;
-3. `hybrid` — vector + BM25 через weighted RRF;
-4. `hybrid_reranker` — hybrid retrieval и CrossEncoder reranker.
+1. vector `0.20` / BM25 `0.80`;
+2. vector `0.40` / BM25 `0.60`;
+3. vector `0.50` / BM25 `0.50`;
+4. vector `0.60` / BM25 `0.40`;
+5. vector `0.80` / BM25 `0.20`.
+
+Отдельные `vector_only` и `bm25_only` конфигурации не создаются. Во всех запусках
+работает гибридный поиск, а reranker, `top-k`, `candidate-k` и остальные настройки
+берутся из `.env` и не меняются. Поэтому результат показывает влияние именно весов.
 
 Сначала проиндексируйте синтетические документы:
 
@@ -345,16 +354,29 @@ docker compose up -d qdrant vllm
 docker compose run --rm app index /evaluation/synthetic_corpus --recreate
 ```
 
-Затем выполните общий benchmark:
+Затем запустите подбор весов:
 
 ```bash
-docker compose run --rm app benchmark \
+docker compose run --rm app tune-retrieval \
   /evaluation/synthetic_testset.jsonl \
   --threshold 0.7 \
-  --output-dir /evaluation/benchmark-results
+  --output-dir /evaluation/retrieval-tuning-results
 ```
 
-Benchmark также принимает `--skip-answer-relevancy` и `--skip-context-precision`;
+Собственную сетку можно передать через `--vector-weights`; вес BM25 для каждого
+значения рассчитывается как `1 - vector`:
+
+```bash
+docker compose run --rm app tune-retrieval \
+  /evaluation/synthetic_testset.jsonl \
+  --vector-weights 0.15 0.30 0.45 0.60 0.75 0.90
+```
+
+Требуется минимум четыре различных значения строго между `0` и `1`, поэтому команда
+не может случайно включить отдельный vector-only или BM25-only поиск.
+
+`tune-retrieval` также принимает `--skip-answer-relevancy` и
+`--skip-context-precision`;
 соответствующая метрика будет пропущена и в RAGAS, и в DeepEval, чтобы сравнение
 оставалось симметричным.
 Флаги `--artifact-cache-dir`, `--no-artifact-cache` и `--refresh-artifact-cache`
@@ -368,20 +390,25 @@ Benchmark также принимает `--skip-answer-relevancy` и `--skip-con
 
 Ответ RAG для каждой пары «конфигурация × вопрос» генерируется один раз. RAGAS и
 DeepEval получают один и тот же `response`, `reference` и список `retrieved_contexts`.
-Это исключает случайное различие ответов между двумя evaluator-ами.
+Это исключает случайное различие ответов между двумя evaluator-ами. Только во время
+evaluation отдельно замеряются `service.search()` и генерация по уже найденным
+документам. В консоли для каждого вопроса выводятся `Retrieval: 0.123 с` и
+`Generation: 1.234 с`; повторного поиска через `ask()` нет.
 
 Результаты:
 
-- `benchmark-details.json` — ответы, контексты, оценки, причины и ошибки;
-- `benchmark-comparison.csv` — строки-конфигурации и столбцы-метрики обеих библиотек;
-- `benchmark-report.md` — описание метрик, сводная таблица и автоматический вывод о
-  лучшей конфигурации.
+- `retrieval-tuning-details.json` — ответы, контексты, оценки, причины, ошибки,
+  `retrieval_seconds` и `generation_seconds` каждого вопроса;
+- `retrieval-weights.csv` — веса, среднее время retrieval/generation и метрики;
+- `retrieval-tuning-report.md` — сводная таблица, среднее время и выбранный баланс.
 
 Сравниваются одинаковые понятия: Faithfulness, Context Recall, Answer Accuracy,
 Context Precision и Answer Relevancy. Первые три обязательны; последние две
 диагностические. Для DeepEval Answer Accuracy реализована как reference-based GEval.
 Формулы и judge-промпты библиотек различаются, поэтому абсолютные баллы не обязаны
-совпадать. Для выбора конфигурации основной средний балл считается только по трём
-обязательным метрикам.
+совпадать. Для выбора весов `tuning_score` считается по доступным значениям Context
+Recall, Context Precision и Answer Accuracy обеих библиотек. Победившие значения
+нужно перенести в `RAG_VECTOR_WEIGHT` и `RAG_BM25_WEIGHT`, после чего проверить на
+отложенном наборе вопросов.
 
 Исходный ноутбук не изменяется, проект не зависит от состояния его ячеек.
