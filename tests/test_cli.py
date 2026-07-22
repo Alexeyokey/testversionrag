@@ -14,6 +14,35 @@ def test_check_vllm_command_accepts_custom_prompt() -> None:
     assert args.prompt == "ping"
 
 
+def test_serve_command_accepts_http_and_session_settings() -> None:
+    parser = _build_parser()
+
+    args = parser.parse_args(
+        [
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "9090",
+            "--data-root",
+            "data/npa",
+            "--history-turns",
+            "2",
+            "--max-concurrent-queries",
+            "3",
+            "--no-warmup",
+        ]
+    )
+
+    assert args.command == "serve"
+    assert args.host == "127.0.0.1"
+    assert args.port == 9090
+    assert str(args.data_root) == "data/npa"
+    assert args.history_turns == 2
+    assert args.max_concurrent_queries == 3
+    assert args.no_warmup is True
+
+
 def test_evaluation_accepts_only_artifact_cache_flags() -> None:
     parser = _build_parser()
 
