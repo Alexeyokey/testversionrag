@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import math
 from dataclasses import asdict, dataclass
@@ -10,15 +11,17 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from rag_app.evaluation import (
     EvaluationCase,
     JUDGE_METRICS,
-    OPTIONAL_JUDGE_METRICS,
     RagEvaluationSample,
     REQUIRED_JUDGE_METRICS,
     collect_rag_samples,
+    judge_outcome,
+    select_judge_metrics,
+    summarize_judge_results,
 )
 from rag_app.artifact_cache import (
     ArtifactCache,
     _to_json_value,
-    evaluator_artifact_config,
+    ragas_artifact_config,
 )
 
 if TYPE_CHECKING:
@@ -28,6 +31,27 @@ if TYPE_CHECKING:
 
 
 METRIC_NAMES = JUDGE_METRICS
+_METRIC_RETRY_DELAYS_SECONDS = (1.0, 2.0)
+
+
+class _ManagedRagasScorers(dict[str, Any]):
+    """Набор метрик, владеющий общим асинхронным клиентом judge-модели."""
+
+    def __init__(self, *args: Any, async_client: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.async_client = async_client
+        self._closed = False
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        close = getattr(self.async_client, "close", None)
+        if close is None:
+            return
+        result = close()
+        if inspect.isawaitable(result):
+            await result
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +71,8 @@ class RagasEvaluationResult:
     artifacts: dict[str, Any]
     skipped_metrics: tuple[str, ...]
     cached_artifacts: tuple[str, ...]
+    retrieval_seconds: float | None = None
+    generation_seconds: float | None = None
     error: str | None = None
 
 
@@ -249,21 +275,6 @@ class _ParallelContextPrecision:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._scorer, name)
 
-    def score(
-        self,
-        *,
-        user_input: str,
-        reference: str,
-        retrieved_contexts: list[str],
-    ) -> _MetricValue:
-        return asyncio.run(
-            self.ascore(
-                user_input=user_input,
-                reference=reference,
-                retrieved_contexts=retrieved_contexts,
-            )
-        )
-
     async def ascore(
         self,
         *,
@@ -426,7 +437,7 @@ def build_ragas_scorers(
     )
 
     faithfulness = Faithfulness(llm=judge)
-    cache_config = evaluator_artifact_config(settings, "ragas")
+    cache_config = ragas_artifact_config(settings)
     _cache_llm_artifact(
         faithfulness,
         artifact_cache,
@@ -435,11 +446,14 @@ def build_ragas_scorers(
         evaluator_config=cache_config,
         refresh=refresh_artifact_cache,
     )
-    scorers: dict[str, Any] = {
+    scorers: dict[str, Any] = _ManagedRagasScorers(
+        async_client=client,
+    )
+    scorers.update({
         "faithfulness": faithfulness,
         "context_recall": ContextRecall(llm=judge),
         "answer_accuracy": AnswerAccuracy(llm=judge),
-    }
+    })
     if include_context_precision:
         scorers["context_precision"] = _ParallelContextPrecision(
             ContextPrecision(llm=judge),
@@ -467,8 +481,6 @@ def build_ragas_scorers(
                 return self.model.embed_query(text)
 
             async def aembed_text(self, text: str, **kwargs: Any) -> list[float]:
-                import asyncio
-
                 del kwargs
                 return await asyncio.to_thread(self.model.embed_query, text)
 
@@ -485,8 +497,6 @@ def build_ragas_scorers(
                 texts: list[str],
                 **kwargs: Any,
             ) -> list[list[float]]:
-                import asyncio
-
                 del kwargs
                 return await asyncio.to_thread(self.model.embed_documents, texts)
 
@@ -525,6 +535,115 @@ def _build_vllm_async_client(settings: Settings) -> Any:
         timeout=settings.vllm_timeout,
         max_retries=2,
     )
+
+
+async def _invoke_metric_scorer(
+    scorer: Any,
+    arguments: dict[str, Any],
+) -> Any:
+    """Предпочесть нативный async API RAGAS, сохранив совместимость с тестовыми scorer."""
+    ascore = getattr(scorer, "ascore", None)
+    if callable(ascore):
+        return await ascore(**arguments)
+
+    score = getattr(scorer, "score", None)
+    if not callable(score):
+        raise TypeError(f"У scorer {type(scorer).__name__} отсутствуют ascore() и score()")
+    # Синхронные scorer используются тестовыми двойниками и сторонними расширениями.
+    # Отдельный поток не блокирует единый event loop асинхронного judge-клиента.
+    return await asyncio.to_thread(score, **arguments)
+
+
+async def _score_metric_with_retries(
+    scorer: Any,
+    arguments: dict[str, Any],
+    *,
+    metric_name: str,
+    artifact: _CachedRagasArtifact | None,
+    progress: Callable[[str], None] | None,
+    progress_prefix: str,
+) -> tuple[float, str | None]:
+    """Повторить только временный сетевой сбой и вернуть проверенный балл метрики."""
+    delays = _METRIC_RETRY_DELAYS_SECONDS
+    total_attempts = len(delays) + 1
+    for attempt_index in range(total_attempts):
+        try:
+            metric_result = await _invoke_metric_scorer(scorer, arguments)
+            value = getattr(metric_result, "value", metric_result)
+            numeric_value = float(value)
+            if not math.isfinite(numeric_value):
+                raise ValueError(f"RAGAS вернул нечисловой балл {numeric_value!r}")
+            reason = getattr(metric_result, "reason", None)
+            return numeric_value, str(reason) if reason else None
+        except Exception as error:
+            has_next_attempt = attempt_index < len(delays)
+            if not has_next_attempt or not _is_transient_metric_error(error):
+                raise
+            # Не переносим частично сгенерированные данные неудачной попытки
+            # в следующую и никогда не сохраняем незавершённый артефакт.
+            if artifact is not None:
+                artifact.finish_sample(save=False)
+                artifact.begin_sample()
+            delay = delays[attempt_index]
+            if progress:
+                progress(
+                    f"{progress_prefix} Повтор метрики {metric_name}: "
+                    f"попытка {attempt_index + 2}/{total_attempts} через {delay:g} с"
+                )
+            await asyncio.sleep(delay)
+
+    raise RuntimeError("Недостижимое состояние повтора RAGAS-метрики")
+
+
+def _exception_chain(error: BaseException) -> tuple[BaseException, ...]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return tuple(chain)
+
+
+def _is_transient_metric_error(error: BaseException) -> bool:
+    transient_types = {
+        "APIConnectionError",
+        "APITimeoutError",
+        "ConnectError",
+        "ConnectTimeout",
+        "ReadError",
+        "ReadTimeout",
+        "RemoteProtocolError",
+    }
+    transient_messages = (
+        "connection error",
+        "connection reset",
+        "server disconnected",
+        "temporarily unavailable",
+        "temporary failure",
+        "timed out",
+        "timeout",
+    )
+    for item in _exception_chain(error):
+        if isinstance(item, (ConnectionError, TimeoutError)):
+            return True
+        if type(item).__name__ in transient_types:
+            return True
+        message = str(item).casefold()
+        if any(marker in message for marker in transient_messages):
+            return True
+    return False
+
+
+def _format_metric_error(error: BaseException) -> str:
+    """Не потерять исходную причину, скрытую Instructor/OpenAI-обёртками."""
+    parts: list[str] = []
+    for item in _exception_chain(error):
+        label = f"{type(item).__name__}: {item}"
+        if label not in parts:
+            parts.append(label)
+    return " <- ".join(parts)
 
 
 def evaluate_with_ragas(
@@ -569,7 +688,37 @@ def evaluate_samples_with_ragas(
     refresh_artifact_cache: bool = False,
     progress: Callable[[str], None] | None = None,
 ) -> list[RagasEvaluationResult]:
-    """Оценить заранее сохранённые ответы и контексты, не вызывая RAG повторно."""
+    """Синхронно запустить всю RAGAS-оценку внутри одного event loop."""
+    return asyncio.run(
+        _evaluate_samples_with_ragas_async(
+            samples,
+            settings,
+            threshold=threshold,
+            scorers=scorers,
+            embedding_model=embedding_model,
+            include_answer_relevancy=include_answer_relevancy,
+            include_context_precision=include_context_precision,
+            artifact_cache=artifact_cache,
+            refresh_artifact_cache=refresh_artifact_cache,
+            progress=progress,
+        )
+    )
+
+
+async def _evaluate_samples_with_ragas_async(
+    samples: list[RagEvaluationSample],
+    settings: Settings,
+    *,
+    threshold: float | None = None,
+    scorers: dict[str, Any] | None = None,
+    embedding_model: EmbeddingModel | None = None,
+    include_answer_relevancy: bool = True,
+    include_context_precision: bool = True,
+    artifact_cache: ArtifactCache | None = None,
+    refresh_artifact_cache: bool = False,
+    progress: Callable[[str], None] | None = None,
+) -> list[RagasEvaluationResult]:
+    """Оценить сохранённые ответы через один общий асинхронный клиент judge."""
     resolved_threshold = settings.ragas_threshold if threshold is None else threshold
     if not 0 <= resolved_threshold <= 1:
         raise ValueError("Порог RAGAS должен находиться в диапазоне от 0 до 1")
@@ -581,20 +730,39 @@ def evaluate_samples_with_ragas(
         artifact_cache=artifact_cache,
         refresh_artifact_cache=refresh_artifact_cache,
     )
+    try:
+        return await _evaluate_samples_with_active_scorers(
+            samples,
+            active_scorers,
+            threshold=resolved_threshold,
+            include_answer_relevancy=include_answer_relevancy,
+            include_context_precision=include_context_precision,
+            progress=progress,
+        )
+    finally:
+        if isinstance(active_scorers, _ManagedRagasScorers):
+            await active_scorers.aclose()
+
+
+async def _evaluate_samples_with_active_scorers(
+    samples: list[RagEvaluationSample],
+    active_scorers: dict[str, Any],
+    *,
+    threshold: float,
+    include_answer_relevancy: bool,
+    include_context_precision: bool,
+    progress: Callable[[str], None] | None,
+) -> list[RagasEvaluationResult]:
+    """Выполнить метрики; жизненным циклом клиента управляет вызывающий код."""
     missing_metrics = set(REQUIRED_JUDGE_METRICS) - set(active_scorers)
     if missing_metrics:
         raise ValueError(
             "Не созданы обязательные RAGAS-метрики: " + ", ".join(sorted(missing_metrics))
         )
-    enabled_metric_names = tuple(
-        metric_name
-        for metric_name in METRIC_NAMES
-        if metric_name in active_scorers
-        and (metric_name != "answer_relevancy" or include_answer_relevancy)
-        and (metric_name != "context_precision" or include_context_precision)
-    )
-    skipped_metric_names = tuple(
-        metric_name for metric_name in METRIC_NAMES if metric_name not in enabled_metric_names
+    enabled_metric_names, skipped_metric_names = select_judge_metrics(
+        active_scorers,
+        include_answer_relevancy=include_answer_relevancy,
+        include_context_precision=include_context_precision,
     )
     results: list[RagasEvaluationResult] = []
     total = len(samples)
@@ -649,21 +817,21 @@ def evaluate_samples_with_ragas(
             if artifact is not None:
                 artifact.begin_sample()
             try:
-                metric_result = scorer.score(
-                    **metric_arguments[metric_name]
+                numeric_value, reason = await _score_metric_with_retries(
+                    scorer,
+                    metric_arguments[metric_name],
+                    metric_name=metric_name,
+                    artifact=artifact,
+                    progress=progress,
+                    progress_prefix=f"[RAGAS {index}/{total}]",
                 )
-                value = getattr(metric_result, "value", metric_result)
-                numeric_value = float(value)
-                if not math.isfinite(numeric_value):
-                    raise ValueError(f"RAGAS вернул нечисловой балл {numeric_value!r}")
                 scores[metric_name] = numeric_value
-                reason = getattr(metric_result, "reason", None)
                 if reason:
-                    metric_reasons[metric_name] = str(reason)
+                    metric_reasons[metric_name] = reason
                 metric_succeeded = True
             except Exception as error:
                 # Ошибка одной метрики не скрывает оценки, полученные от остальных.
-                metric_errors[metric_name] = f"{type(error).__name__}: {error}"
+                metric_errors[metric_name] = _format_metric_error(error)
             finally:
                 if artifact is not None:
                     write_error = artifact.finish_sample(save=metric_succeeded)
@@ -674,19 +842,10 @@ def evaluate_samples_with_ragas(
                         if artifact.cache_hits > cache_hits_before:
                             cached_artifacts.append(artifact.artifact_name)
 
-        required_scores = [scores[name] for name in REQUIRED_JUDGE_METRICS]
-        mean_score = (
-            sum(float(score) for score in required_scores) / len(required_scores)
-            if all(score is not None for score in required_scores)
-            else None
-        )
-        passed = (
-            not any(name in metric_errors for name in REQUIRED_JUDGE_METRICS)
-            and all(
-                scores[name] is not None
-                and float(scores[name]) >= resolved_threshold
-                for name in REQUIRED_JUDGE_METRICS
-            )
+        mean_score, passed = judge_outcome(
+            scores,
+            metric_errors,
+            threshold=threshold,
         )
         results.append(
             RagasEvaluationResult(
@@ -703,6 +862,8 @@ def evaluate_samples_with_ragas(
                 artifacts=artifacts,
                 skipped_metrics=skipped_metric_names,
                 cached_artifacts=tuple(cached_artifacts),
+                retrieval_seconds=sample.retrieval_seconds,
+                generation_seconds=sample.generation_seconds,
             )
         )
 
@@ -714,37 +875,11 @@ def summarize_ragas(
     threshold: float,
 ) -> dict[str, Any]:
     """Посчитать средний балл каждой метрики и долю пройденных примеров."""
-    passed = sum(result.passed for result in results)
-    metric_averages: dict[str, float | None] = {}
-    for metric_name in METRIC_NAMES:
-        values = [
-            result.scores[metric_name]
-            for result in results
-            if result.scores.get(metric_name) is not None
-        ]
-        metric_averages[metric_name] = (
-            sum(float(value) for value in values) / len(values) if values else None
-        )
-
-    mean_values = [
-        result.mean_score
-        for result in results
-        if result.mean_score is not None
-    ]
-    return {
-        "total": len(results),
-        "passed": passed,
-        "failed": len(results) - passed,
-        "pass_rate": passed / len(results) if results else 0.0,
-        "threshold": threshold,
-        "required_metrics": list(REQUIRED_JUDGE_METRICS),
-        "optional_metrics": list(OPTIONAL_JUDGE_METRICS),
-        "artifact_cache_hits": sum(
-            len(result.cached_artifacts) for result in results
-        ),
-        "mean_score": sum(mean_values) / len(mean_values) if mean_values else None,
-        "metrics": metric_averages,
-    }
+    summary = summarize_judge_results(results, threshold=threshold)
+    summary["artifact_cache_hits"] = sum(
+        len(result.cached_artifacts) for result in results
+    )
+    return summary
 
 
 def write_ragas_report(
@@ -791,6 +926,8 @@ def _failed_result(
         artifacts={},
         skipped_metrics=METRIC_NAMES,
         cached_artifacts=(),
+        retrieval_seconds=getattr(sample, "retrieval_seconds", None),
+        generation_seconds=getattr(sample, "generation_seconds", None),
         error=error,
     )
 

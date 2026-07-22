@@ -186,6 +186,37 @@ def test_deepeval_preserves_rag_error() -> None:
     assert not scorers["faithfulness"].cases
 
 
+def test_deepeval_required_metric_error_makes_mean_unavailable() -> None:
+    class _FailingMetric(_Metric):
+        def measure(self, test_case) -> float:
+            raise RuntimeError("judge failed")
+
+    sample = RagEvaluationSample(
+        question="Вопрос",
+        reference="Эталон",
+        response="Ответ",
+        retrieved_contexts=("Контекст",),
+        sources=("source.md",),
+    )
+    scorers = {
+        "faithfulness": _FailingMetric(0.0),
+        "context_recall": _Metric(1.0),
+        "answer_accuracy": _Metric(1.0),
+    }
+
+    result = evaluate_samples_with_deepeval(
+        [sample],
+        Settings(enable_reranker=False),
+        scorers=scorers,
+        test_case_factory=_case_factory,
+        include_context_precision=False,
+        include_answer_relevancy=False,
+    )[0]
+
+    assert result.mean_score is None
+    assert result.passed is False
+
+
 def test_deepeval_recomputes_metric_scores_on_every_run() -> None:
     scorers = {
         "faithfulness": _Metric(0.9),

@@ -101,11 +101,10 @@ class ArtifactCache:
         return self.directory / evaluator / "artifacts" / artifact_name / f"{identity}.json"
 
 
-def evaluator_artifact_config(settings: Settings, evaluator: str) -> dict[str, Any]:
-    """Описать настройки, от которых зависит генерация промежуточной разметки."""
-    package_name = "ragas" if evaluator == "ragas" else "deepeval"
+def ragas_artifact_config(settings: Settings) -> dict[str, Any]:
+    """Описать RAGAS-настройки, от которых зависит артефакт."""
     try:
-        package_version = version(package_name)
+        package_version = version("ragas")
     except PackageNotFoundError:
         package_version = "unknown"
 

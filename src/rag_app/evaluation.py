@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
@@ -21,6 +23,87 @@ OPTIONAL_JUDGE_METRICS = (
     "answer_relevancy",
 )
 JUDGE_METRICS = REQUIRED_JUDGE_METRICS + OPTIONAL_JUDGE_METRICS
+
+
+def select_judge_metrics(
+    scorers: Mapping[str, Any],
+    *,
+    include_answer_relevancy: bool,
+    include_context_precision: bool,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Вернуть включённые и пропущенные judge-метрики в стабильном порядке."""
+    enabled = tuple(
+        metric_name
+        for metric_name in JUDGE_METRICS
+        if metric_name in scorers
+        and (metric_name != "answer_relevancy" or include_answer_relevancy)
+        and (metric_name != "context_precision" or include_context_precision)
+    )
+    skipped = tuple(
+        metric_name for metric_name in JUDGE_METRICS if metric_name not in enabled
+    )
+    return enabled, skipped
+
+
+def judge_outcome(
+    scores: Mapping[str, float | None],
+    metric_errors: Mapping[str, str],
+    *,
+    threshold: float,
+) -> tuple[float | None, bool]:
+    """Вернуть строгое среднее и passed по всем обязательным метрикам."""
+    required_scores = [scores.get(name) for name in REQUIRED_JUDGE_METRICS]
+    complete = all(score is not None for score in required_scores)
+    mean_score = (
+        sum(float(score) for score in required_scores if score is not None)
+        / len(required_scores)
+        if complete
+        else None
+    )
+    passed = (
+        complete
+        and not any(name in metric_errors for name in REQUIRED_JUDGE_METRICS)
+        and all(
+            float(score) >= threshold
+            for score in required_scores
+            if score is not None
+        )
+    )
+    return mean_score, passed
+
+
+def summarize_judge_results(
+    results: Sequence[Any],
+    *,
+    threshold: float,
+) -> dict[str, Any]:
+    """Общая сводка RAGAS/DeepEval без evaluator-специфичных полей."""
+    passed = sum(result.passed for result in results)
+    metrics = {
+        metric_name: _mean_available(
+            result.scores.get(metric_name) for result in results
+        )
+        for metric_name in JUDGE_METRICS
+    }
+    return {
+        "total": len(results),
+        "passed": passed,
+        "failed": len(results) - passed,
+        "pass_rate": passed / len(results) if results else 0.0,
+        "threshold": threshold,
+        "required_metrics": list(REQUIRED_JUDGE_METRICS),
+        "optional_metrics": list(OPTIONAL_JUDGE_METRICS),
+        "mean_score": _mean_available(result.mean_score for result in results),
+        "metrics": metrics,
+        "timings": {
+            "retrieval_mean_seconds": _mean_available(
+                result.retrieval_seconds for result in results
+            ),
+            "generation_mean_seconds": _mean_available(
+                result.generation_seconds for result in results
+            ),
+        },
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +144,22 @@ class RagEvaluationSample:
     response: str
     retrieved_contexts: tuple[str, ...]
     sources: tuple[str, ...]
+    retrieval_seconds: float | None = None
+    generation_seconds: float | None = None
     error: str | None = None
+
+
+def _document_data(
+    documents: Sequence[Any],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    contexts = tuple(document.page_content for document in documents)
+    sources = tuple(
+        dict.fromkeys(
+            str(document.metadata.get("source", "unknown"))
+            for document in documents
+        )
+    )
+    return contexts, sources
 
 
 def load_cases(path: str | Path) -> list[EvaluationCase]:
@@ -141,13 +239,8 @@ def evaluate(
             progress(f"[RAG {index}/{total}] Вопрос: {case.question}")
         try:
             answer, documents = service.ask(case.question)
-            context = "\n".join(document.page_content for document in documents)
-            sources = tuple(
-                dict.fromkeys(
-                    str(document.metadata.get("source", "unknown"))
-                    for document in documents
-                )
-            )
+            contexts, sources = _document_data(documents)
+            context = "\n".join(contexts)
 
             missing_answer = _missing_terms(answer, case.answer_terms)
             missing_context = _missing_terms(context, case.context_terms)
@@ -195,7 +288,7 @@ def collect_rag_samples(
     *,
     progress: Callable[[str], None] | None = None,
 ) -> list[RagEvaluationSample]:
-    """Один раз получить ответы и контексты, чтобы evaluator-ы сравнивали одинаковые данные."""
+    """Получить RAG-данные и замерить retrieval/generation только для evaluation."""
     samples: list[RagEvaluationSample] = []
     total = len(cases)
     for index, case in enumerate(cases, start=1):
@@ -214,25 +307,18 @@ def collect_rag_samples(
             )
             continue
 
+        retrieval_started_at = perf_counter()
         try:
-            response, documents = service.ask(case.question)
-            samples.append(
-                RagEvaluationSample(
-                    question=case.question,
-                    reference=case.reference,
-                    response=response,
-                    retrieved_contexts=tuple(
-                        document.page_content for document in documents
-                    ),
-                    sources=tuple(
-                        dict.fromkeys(
-                            str(document.metadata.get("source", "unknown"))
-                            for document in documents
-                        )
-                    ),
+            documents = service.search(case.question)
+            retrieval_seconds = perf_counter() - retrieval_started_at
+            retrieved_contexts, sources = _document_data(documents)
+            if progress:
+                progress(
+                    f"[RAG {index}/{total}] Retrieval: "
+                    f"{retrieval_seconds:.3f} с"
                 )
-            )
         except Exception as error:
+            retrieval_seconds = perf_counter() - retrieval_started_at
             samples.append(
                 RagEvaluationSample(
                     question=case.question,
@@ -240,6 +326,43 @@ def collect_rag_samples(
                     response="",
                     retrieved_contexts=(),
                     sources=(),
+                    retrieval_seconds=retrieval_seconds,
+                    error=f"{type(error).__name__}: {error}",
+                )
+            )
+            continue
+
+        generation_started_at = perf_counter()
+        try:
+            response = service.answer_from_documents(case.question, documents)
+            generation_seconds = perf_counter() - generation_started_at
+            if progress:
+                progress(
+                    f"[RAG {index}/{total}] Generation: "
+                    f"{generation_seconds:.3f} с"
+                )
+            samples.append(
+                RagEvaluationSample(
+                    question=case.question,
+                    reference=case.reference,
+                    response=response,
+                    retrieved_contexts=retrieved_contexts,
+                    sources=sources,
+                    retrieval_seconds=retrieval_seconds,
+                    generation_seconds=generation_seconds,
+                )
+            )
+        except Exception as error:
+            generation_seconds = perf_counter() - generation_started_at
+            samples.append(
+                RagEvaluationSample(
+                    question=case.question,
+                    reference=case.reference,
+                    response="",
+                    retrieved_contexts=retrieved_contexts,
+                    sources=sources,
+                    retrieval_seconds=retrieval_seconds,
+                    generation_seconds=generation_seconds,
                     error=f"{type(error).__name__}: {error}",
                 )
             )
@@ -338,9 +461,13 @@ def _average(
     results: list[EvaluationResult],
     field_name: str,
 ) -> float | None:
-    values = [
+    return _mean_available(
         float(value)
         for result in results
         if (value := getattr(result, field_name)) is not None
-    ]
-    return sum(values) / len(values) if values else None
+    )
+
+
+def _mean_available(values: Iterable[float | None]) -> float | None:
+    available = [float(value) for value in values if value is not None]
+    return sum(available) / len(available) if available else None

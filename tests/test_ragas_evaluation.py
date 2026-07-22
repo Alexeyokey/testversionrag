@@ -8,6 +8,7 @@ from rag_app.evaluation import EvaluationCase
 from rag_app.ragas_evaluation import (
     _ArtifactCachingLLM,
     _CachedRagasArtifact,
+    _ManagedRagasScorers,
     _ParallelContextPrecision,
     _build_vllm_async_client,
     build_ragas_scorers,
@@ -24,16 +25,22 @@ class _Document:
 
 
 class _Service:
+    def search(self, question: str):
+        del question
+        return [
+            _Document(
+                page_content="Дата договора: 15 марта 2025 года.",
+                metadata={"source": "contract.pdf"},
+            )
+        ]
+
+    def answer_from_documents(self, question: str, documents) -> str:
+        del question, documents
+        return "Договор заключён 15 марта 2025 года."
+
     def ask(self, question: str):
-        return (
-            "Договор заключён 15 марта 2025 года.",
-            [
-                _Document(
-                    page_content="Дата договора: 15 марта 2025 года.",
-                    metadata={"source": "contract.pdf"},
-                )
-            ],
-        )
+        documents = self.search(question)
+        return self.answer_from_documents(question, documents), documents
 
 
 class _Scorer:
@@ -44,6 +51,27 @@ class _Scorer:
     def score(self, **kwargs):
         self.calls.append(kwargs)
         return SimpleNamespace(value=self.value)
+
+
+class _AsyncScorer:
+    def __init__(self, value: float = 1.0) -> None:
+        self.value = value
+        self.calls = 0
+        self.event_loops: set[int] = set()
+
+    async def ascore(self, **kwargs):
+        del kwargs
+        self.calls += 1
+        self.event_loops.add(id(asyncio.get_running_loop()))
+        return SimpleNamespace(value=self.value)
+
+
+class _AsyncClient:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 def test_ragas_reports_current_question_and_metric() -> None:
@@ -59,17 +87,122 @@ def test_ragas_reports_current_question_and_metric() -> None:
         )
     }
 
-    evaluate_with_ragas(
+    result = evaluate_with_ragas(
         _Service(),
         [EvaluationCase(question="Когда договор?", reference="15 марта")],
         Settings(enable_reranker=False),
         scorers=scorers,
         progress=messages.append,
-    )
+    )[0]
 
     assert messages[0] == "[RAG 1/1] Вопрос: Когда договор?"
-    assert messages[1] == "[RAGAS 1/1] Вопрос: Когда договор?"
+    assert any("[RAG 1/1] Retrieval:" in message for message in messages)
+    assert any("[RAG 1/1] Generation:" in message for message in messages)
+    assert "[RAGAS 1/1] Вопрос: Когда договор?" in messages
     assert "[RAGAS 1/1] Метрика: faithfulness" in messages
+    assert result.retrieval_seconds is not None
+    assert result.generation_seconds is not None
+
+
+def test_ragas_uses_one_event_loop_and_closes_managed_client() -> None:
+    client = _AsyncClient()
+    scorers = _ManagedRagasScorers(
+        {
+            name: _AsyncScorer()
+            for name in (
+                "faithfulness",
+                "context_recall",
+                "answer_accuracy",
+                "context_precision",
+                "answer_relevancy",
+            )
+        },
+        async_client=client,
+    )
+
+    result = evaluate_with_ragas(
+        _Service(),
+        [EvaluationCase(question="Когда договор?", reference="15 марта 2025 года")],
+        Settings(enable_reranker=False),
+        scorers=scorers,
+    )[0]
+
+    loop_ids = set().union(*(scorer.event_loops for scorer in scorers.values()))
+    assert result.passed is True
+    assert loop_ids and len(loop_ids) == 1
+    assert client.closed is True
+
+
+def test_ragas_retries_only_transient_connection_errors(monkeypatch) -> None:
+    class _TemporarilyFailingScorer(_AsyncScorer):
+        async def ascore(self, **kwargs):
+            del kwargs
+            self.calls += 1
+            if self.calls < 3:
+                raise ConnectionError("temporary connection error")
+            self.event_loops.add(id(asyncio.get_running_loop()))
+            return SimpleNamespace(value=self.value)
+
+    monkeypatch.setattr(
+        "rag_app.ragas_evaluation._METRIC_RETRY_DELAYS_SECONDS",
+        (0.0, 0.0),
+    )
+    faithfulness = _TemporarilyFailingScorer()
+    messages: list[str] = []
+    scorers = {
+        "faithfulness": faithfulness,
+        "context_recall": _AsyncScorer(),
+        "answer_accuracy": _AsyncScorer(),
+    }
+
+    result = evaluate_with_ragas(
+        _Service(),
+        [EvaluationCase(question="Когда договор?", reference="15 марта 2025 года")],
+        Settings(enable_reranker=False),
+        scorers=scorers,
+        include_context_precision=False,
+        include_answer_relevancy=False,
+        progress=messages.append,
+    )[0]
+
+    assert faithfulness.calls == 3
+    assert result.scores["faithfulness"] == 1.0
+    assert "faithfulness" not in result.metric_errors
+    assert sum("Повтор метрики faithfulness" in message for message in messages) == 2
+
+
+def test_ragas_does_not_retry_deterministic_metric_error(monkeypatch) -> None:
+    class _InvalidOutputScorer:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def ascore(self, **kwargs):
+            del kwargs
+            self.calls += 1
+            raise ValueError("invalid judge output")
+
+    monkeypatch.setattr(
+        "rag_app.ragas_evaluation._METRIC_RETRY_DELAYS_SECONDS",
+        (0.0, 0.0),
+    )
+    faithfulness = _InvalidOutputScorer()
+
+    result = evaluate_with_ragas(
+        _Service(),
+        [EvaluationCase(question="Когда договор?", reference="15 марта 2025 года")],
+        Settings(enable_reranker=False),
+        scorers={
+            "faithfulness": faithfulness,
+            "context_recall": _AsyncScorer(),
+            "answer_accuracy": _AsyncScorer(),
+        },
+        include_context_precision=False,
+        include_answer_relevancy=False,
+    )[0]
+
+    assert faithfulness.calls == 1
+    assert result.scores["faithfulness"] is None
+    assert result.metric_errors["faithfulness"] == "ValueError: invalid judge output"
 
 
 class _AsyncContextPrecisionScorer:
@@ -447,10 +580,12 @@ def test_context_precision_evaluates_contexts_in_parallel_and_preserves_rank() -
     original = _AsyncContextPrecisionScorer()
     scorer = _ParallelContextPrecision(original, concurrency=2)
 
-    result = scorer.score(
-        user_input="Вопрос",
-        reference="Эталон",
-        retrieved_contexts=["relevant-1", "noise", "relevant-2", "noise-2"],
+    result = asyncio.run(
+        scorer.ascore(
+            user_input="Вопрос",
+            reference="Эталон",
+            retrieved_contexts=["relevant-1", "noise", "relevant-2", "noise-2"],
+        )
     )
 
     expected = (1.0 + 2 / 3) / 2

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 from rag_app.evaluation import (
     JUDGE_METRICS,
-    OPTIONAL_JUDGE_METRICS,
     REQUIRED_JUDGE_METRICS,
     RagEvaluationSample,
+    judge_outcome,
+    select_judge_metrics,
+    summarize_judge_results,
 )
 if TYPE_CHECKING:
     from rag_app.config import Settings
@@ -32,6 +35,8 @@ class DeepEvalEvaluationResult:
     metric_errors: dict[str, str]
     metric_reasons: dict[str, str]
     skipped_metrics: tuple[str, ...]
+    retrieval_seconds: float | None = None
+    generation_seconds: float | None = None
     error: str | None = None
 
 
@@ -39,7 +44,7 @@ def build_vllm_deepeval_judge(settings: Settings) -> Any:
     """Создать DeepEvalBaseLLM, использующий JSON schema через тот же vLLM API."""
     try:
         from deepeval.models import DeepEvalBaseLLM
-        from openai import AsyncOpenAI, OpenAI
+        from openai import OpenAI
     except ImportError as error:
         raise RuntimeError(
             "Для DeepEval установите зависимости проекта заново: "
@@ -57,12 +62,6 @@ def build_vllm_deepeval_judge(settings: Settings) -> Any:
             api_key = settings.vllm_api_key or "local-vllm-key"
             self.model_name = model_name
             self.client = OpenAI(
-                api_key=api_key,
-                base_url=settings.vllm_base_url,
-                timeout=settings.vllm_timeout,
-                max_retries=2,
-            )
-            self.async_client = AsyncOpenAI(
                 api_key=api_key,
                 base_url=settings.vllm_base_url,
                 timeout=settings.vllm_timeout,
@@ -123,13 +122,7 @@ def build_vllm_deepeval_judge(settings: Settings) -> Any:
             return self._parse_content(content, schema)
 
         async def a_generate(self, prompt: str, schema: Any | None = None) -> Any:
-            completion = await self.async_client.chat.completions.create(
-                **self._request_arguments(prompt, schema)
-            )
-            content = completion.choices[0].message.content
-            if not isinstance(content, str):
-                raise RuntimeError("vLLM вернул пустой structured output для DeepEval")
-            return self._parse_content(content, schema)
+            return await asyncio.to_thread(self.generate, prompt, schema)
 
     return VllmDeepEvalJudge()
 
@@ -232,15 +225,10 @@ def evaluate_samples_with_deepeval(
             "Не созданы обязательные DeepEval-метрики: "
             + ", ".join(sorted(missing_metrics))
         )
-    enabled_metric_names = tuple(
-        metric_name
-        for metric_name in METRIC_NAMES
-        if metric_name in active_scorers
-        and (metric_name != "answer_relevancy" or include_answer_relevancy)
-        and (metric_name != "context_precision" or include_context_precision)
-    )
-    skipped_metric_names = tuple(
-        metric_name for metric_name in METRIC_NAMES if metric_name not in enabled_metric_names
+    enabled_metric_names, skipped_metric_names = select_judge_metrics(
+        active_scorers,
+        include_answer_relevancy=include_answer_relevancy,
+        include_context_precision=include_context_precision,
     )
     if test_case_factory is None:
         try:
@@ -291,23 +279,10 @@ def evaluate_samples_with_deepeval(
             except Exception as error:
                 metric_errors[metric_name] = f"{type(error).__name__}: {error}"
 
-        required_scores = [
-            scores[metric_name]
-            for metric_name in REQUIRED_JUDGE_METRICS
-            if scores[metric_name] is not None
-        ]
-        mean_score = (
-            sum(float(score) for score in required_scores) / len(required_scores)
-            if required_scores
-            else None
-        )
-        passed = (
-            not any(name in metric_errors for name in REQUIRED_JUDGE_METRICS)
-            and all(
-                scores[name] is not None
-                and float(scores[name]) >= resolved_threshold
-                for name in REQUIRED_JUDGE_METRICS
-            )
+        mean_score, passed = judge_outcome(
+            scores,
+            metric_errors,
+            threshold=resolved_threshold,
         )
         results.append(
             DeepEvalEvaluationResult(
@@ -322,6 +297,8 @@ def evaluate_samples_with_deepeval(
                 metric_errors=metric_errors,
                 metric_reasons=metric_reasons,
                 skipped_metrics=skipped_metric_names,
+                retrieval_seconds=sample.retrieval_seconds,
+                generation_seconds=sample.generation_seconds,
             )
         )
 
@@ -332,34 +309,7 @@ def summarize_deepeval(
     results: list[DeepEvalEvaluationResult],
     threshold: float,
 ) -> dict[str, Any]:
-    passed = sum(result.passed for result in results)
-    metric_averages: dict[str, float | None] = {}
-    for metric_name in METRIC_NAMES:
-        values = [
-            result.scores[metric_name]
-            for result in results
-            if result.scores.get(metric_name) is not None
-        ]
-        metric_averages[metric_name] = (
-            sum(float(value) for value in values) / len(values) if values else None
-        )
-
-    mean_values = [
-        result.mean_score
-        for result in results
-        if result.mean_score is not None
-    ]
-    return {
-        "total": len(results),
-        "passed": passed,
-        "failed": len(results) - passed,
-        "pass_rate": passed / len(results) if results else 0.0,
-        "threshold": threshold,
-        "required_metrics": list(REQUIRED_JUDGE_METRICS),
-        "optional_metrics": list(OPTIONAL_JUDGE_METRICS),
-        "mean_score": sum(mean_values) / len(mean_values) if mean_values else None,
-        "metrics": metric_averages,
-    }
+    return summarize_judge_results(results, threshold=threshold)
 
 
 def _failed_result(
@@ -378,5 +328,7 @@ def _failed_result(
         metric_errors={},
         metric_reasons={},
         skipped_metrics=METRIC_NAMES,
+        retrieval_seconds=sample.retrieval_seconds,
+        generation_seconds=sample.generation_seconds,
         error=error,
     )
