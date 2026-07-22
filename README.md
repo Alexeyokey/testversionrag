@@ -43,6 +43,16 @@ docker compose up -d qdrant vllm
 docker compose logs -f vllm
 ```
 
+Qdrant запускается из NVIDIA GPU-образа и автоматически использует доступные GPU
+при построении HNSW. Это не переносит вычисление embeddings в Qdrant: embeddings
+по-прежнему строит сервис `app`. Во время массовой переиндексации лучше остановить
+vLLM, чтобы Qdrant и embedding-модель не конкурировали с ним за видеопамять.
+Проверить инициализацию GPU можно по логам:
+
+```bash
+docker compose logs qdrant | grep -Ei "GPU|Vulkan|device"
+```
+
 Тестовый профиль использует `QuantTrio/Qwen3.6-27B-AWQ`, vLLM 0.19.0 и
 Transformers 5.5.4. Первый запуск скачает около 21 GiB файлов модели. Когда контейнер
 станет healthy, проверьте версию, опубликованную модель и короткую генерацию:
@@ -160,6 +170,8 @@ reranker и индекс остаются в памяти.
 Основные параметры находятся в `.env.example`:
 
 - `QDRANT_URL`, `QDRANT_API_KEY`, `RAG_COLLECTION` — подключение к Qdrant;
+- `QDRANT_GPU_INDEXING` — включить GPU при построении HNSW (`1` по умолчанию);
+- `QDRANT_GPU_DEVICE_FILTER` — выбирать GPU по имени (`nvidia` по умолчанию);
 - `RAG_EMBEDDING_MODEL`, `RAG_RERANKER_MODEL` — модели retrieval-пайплайна;
 - `RAG_GENERATION_MODEL` — имя модели, которую обслуживает vLLM;
 - `RAG_VLLM_BASE_URL`, `RAG_VLLM_API_KEY`, `RAG_VLLM_TIMEOUT` — подключение к vLLM;
