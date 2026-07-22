@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import replace
+from threading import RLock
 from typing import TYPE_CHECKING
 
 from langchain_core.documents import Document
@@ -29,6 +30,9 @@ class RagService:
         self._reranker = None
         self._retriever: HybridRetriever | None = None
         self._generator: TextGenerator | None = None
+        # Защищает только ленивое создание компонентов. После инициализации
+        # read-only inference разных API-запросов может выполняться параллельно.
+        self._component_lock = RLock()
         self._store = VectorStore(
             url=settings.qdrant_url,
             collection_name=settings.collection_name,
@@ -39,11 +43,13 @@ class RagService:
     def embedding_model(self) -> EmbeddingModel:
         # Загружаем embedding-модель только перед первой операцией, где она нужна.
         if self._embedding_model is None:
-            self._embedding_model = EmbeddingModel(
-                self.settings.embedding_model,
-                batch_size=self.settings.embedding_batch_size,
-                trust_remote_code=self.settings.trust_remote_code,
-            )
+            with self._component_lock:
+                if self._embedding_model is None:
+                    self._embedding_model = EmbeddingModel(
+                        self.settings.embedding_model,
+                        batch_size=self.settings.embedding_batch_size,
+                        trust_remote_code=self.settings.trust_remote_code,
+                    )
         return self._embedding_model
 
     def index(self, source: str, recreate: bool = False) -> int:
@@ -92,7 +98,8 @@ class RagService:
             self._store.upsert(document_batch, vector_batch)
 
         # При следующем поиске перечитать обновлённый индекс и перестроить BM25.
-        self._retriever = None
+        with self._component_lock:
+            self._retriever = None
         return len(documents)
 
     @property
@@ -101,46 +108,52 @@ class RagService:
         if not self.settings.generation_model:
             raise ValueError("Для генерации задайте RAG_GENERATION_MODEL")
         if self._generator is None:
-            from rag_app.generation import TextGenerator
+            with self._component_lock:
+                if self._generator is None:
+                    from rag_app.generation import TextGenerator
 
-            self._generator = TextGenerator(
-                self.settings.generation_model,
-                max_new_tokens=self.settings.max_new_tokens,
-                base_url=self.settings.vllm_base_url,
-                api_key=self.settings.vllm_api_key,
-                temperature=self.settings.temperature,
-                thinking=self.settings.thinking,
-                timeout=self.settings.vllm_timeout,
-            )
+                    self._generator = TextGenerator(
+                        self.settings.generation_model,
+                        max_new_tokens=self.settings.max_new_tokens,
+                        base_url=self.settings.vllm_base_url,
+                        api_key=self.settings.vllm_api_key,
+                        temperature=self.settings.temperature,
+                        thinking=self.settings.thinking,
+                        timeout=self.settings.vllm_timeout,
+                    )
         return self._generator
 
     def search(self, query: str) -> list[Document]:
         if self._retriever is None:
-            # BM25 строится по снимку коллекции, vector search обращается в тот же
-            # Qdrant.
-            documents = self._store.load_documents()
-            if not documents:
-                return []
+            with self._component_lock:
+                if self._retriever is None:
+                    # BM25 строится по снимку коллекции, vector search
+                    # обращается в тот же Qdrant.
+                    documents = self._store.load_documents()
+                    if not documents:
+                        return []
 
-            def vector_search(text: str, limit: int) -> list[Document]:
-                vector = self.embedding_model.embed_query(text)
-                return self._store.search(vector, limit)
+                    def vector_search(text: str, limit: int) -> list[Document]:
+                        vector = self.embedding_model.embed_query(text)
+                        return self._store.search(vector, limit)
 
-            if self.settings.enable_reranker and self._reranker is None:
-                from rag_app.reranker import CrossEncoderReranker
+                    if self.settings.enable_reranker and self._reranker is None:
+                        from rag_app.reranker import CrossEncoderReranker
 
-                self._reranker = CrossEncoderReranker(self.settings.reranker_model)
+                        self._reranker = CrossEncoderReranker(
+                            self.settings.reranker_model
+                        )
 
-            self._retriever = HybridRetriever(
-                documents=documents,
-                vector_search=vector_search,
-                reranker=self._reranker,
-                top_k=self.settings.top_k,
-                candidate_k=self.settings.candidate_k,
-                rank_constant=self.settings.rank_constant,
-                vector_weight=self.settings.vector_weight,
-                bm25_weight=self.settings.bm25_weight,
-            )
+                    self._retriever = HybridRetriever(
+                        documents=documents,
+                        vector_search=vector_search,
+                        reranker=self._reranker,
+                        top_k=self.settings.top_k,
+                        candidate_k=self.settings.candidate_k,
+                        rank_constant=self.settings.rank_constant,
+                        vector_weight=self.settings.vector_weight,
+                        bm25_weight=self.settings.bm25_weight,
+                    )
         return self._retriever.retrieve(query)
 
     def set_retrieval_weights(
@@ -156,13 +169,14 @@ class RagService:
             bm25_weight=bm25_weight,
         )
         updated_settings.validate()
-        self.settings = updated_settings
-        if self._retriever is not None:
-            # Меняем лёгкую обёртку, не пересоздавая BM25 и reranker.
-            self._retriever = self._retriever.with_weights(
-                vector_weight=vector_weight,
-                bm25_weight=bm25_weight,
-            )
+        with self._component_lock:
+            self.settings = updated_settings
+            if self._retriever is not None:
+                # Меняем лёгкую обёртку, не пересоздавая BM25 и reranker.
+                self._retriever = self._retriever.with_weights(
+                    vector_weight=vector_weight,
+                    bm25_weight=bm25_weight,
+                )
 
     def ask(
         self,
