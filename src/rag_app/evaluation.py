@@ -52,6 +52,7 @@ def judge_outcome(
     threshold: float,
 ) -> tuple[float | None, bool]:
     """Вернуть строгое среднее и passed по всем обязательным метрикам."""
+    # Диагностические метрики показываем отдельно: они не влияют на passed.
     required_scores = [scores.get(name) for name in REQUIRED_JUDGE_METRICS]
     complete = all(score is not None for score in required_scores)
     mean_score = (
@@ -153,6 +154,7 @@ def _document_data(
     documents: Sequence[Any],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     contexts = tuple(document.page_content for document in documents)
+    # Убираем повторяющиеся источники, но сохраняем порядок retrieval.
     sources = tuple(
         dict.fromkeys(
             str(document.metadata.get("source", "unknown"))
@@ -307,6 +309,7 @@ def collect_rag_samples(
             )
             continue
 
+        # Замеряем search отдельно, чтобы generation не попала во время retrieval.
         retrieval_started_at = perf_counter()
         try:
             documents = service.search(case.question)
@@ -469,5 +472,6 @@ def _average(
 
 
 def _mean_available(values: Iterable[float | None]) -> float | None:
+    # None означает «не измерялось» и не должно занижать среднее искусственным нулём.
     available = [float(value) for value in values if value is not None]
     return sum(available) / len(available) if available else None

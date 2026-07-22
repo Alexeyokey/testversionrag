@@ -40,6 +40,7 @@ class CrossEncoderReranker:
             for document in documents
         ]
         scores = self.model.predict(pairs, batch_size=self.batch_size)
+        # Не меняем кандидатов BM25/vector search, добавляя к ним rerank score.
         ranked = [
             Document(
                 page_content=document.page_content,

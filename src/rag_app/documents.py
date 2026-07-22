@@ -119,6 +119,8 @@ def _rtf_to_text(raw: bytes) -> str:
         word, argument, hex_code, escaped, brace, character = match.groups()
 
         if brace:
+            # Вложенная RTF-группа наследует состояние, а при закрытии возвращает
+            # старое.
             if brace == "{":
                 stack.append((unicode_fallback_length, ignorable))
             elif stack:
@@ -142,6 +144,7 @@ def _rtf_to_text(raw: bytes) -> str:
                 unicode_fallback_length = max(0, int(argument))
             elif normalized_word == "u" and argument is not None:
                 codepoint = int(argument)
+                # RTF хранит \u как знаковое 16-битное число.
                 if codepoint < 0:
                     codepoint += 0x10000
                 if not ignorable:
@@ -363,6 +366,7 @@ class DocumentProcessor:
             )
             document.metadata.setdefault("chunk_index", chunk_index)
             identity = f"{source_identity}|{document.metadata['chunk_index']}"
+            # Стабильный UUID обновит ту же точку Qdrant при повторной индексации.
             document.metadata["doc_id"] = str(uuid5(NAMESPACE_URL, identity))
         return documents
 

@@ -211,6 +211,7 @@ def _document_payload(document) -> dict:
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+    # Сначала читаем --env-file, затем строим Settings из выбранного файла.
     load_dotenv(args.env_file)
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,
@@ -296,6 +297,7 @@ def main() -> None:
             )
             print(f"Отчёт: {report_path}")
             if summary["failed"]:
+                # Отчёт уже сохранён, но CI должен увидеть непройденную проверку.
                 raise SystemExit(1)
         elif args.command == "evaluate-ragas":
             from rag_app.evaluation import load_cases
@@ -365,6 +367,7 @@ def main() -> None:
             if args.skip_context_precision:
                 print("Context Precision: не измерялась (null)")
             if summary["failed"]:
+                # Частичные результаты остаются в JSON, а CI получает ненулевой код.
                 raise SystemExit(1)
         elif args.command == "tune-retrieval":
             from rag_app.retrieval_tuning import (

@@ -13,6 +13,8 @@ def _as_bool(name: str, default: bool) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
+    # Экспериментальные настройки создаются через replace(), исходный объект
+    # не меняется.
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str | None = None
     collection_name: str = "documents"
@@ -45,6 +47,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        # Поля dataclass — единственный источник значений по умолчанию.
         defaults = cls()
         return cls(
             qdrant_url=os.getenv("QDRANT_URL", defaults.qdrant_url),

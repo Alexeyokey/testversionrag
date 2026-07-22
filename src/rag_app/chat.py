@@ -59,6 +59,7 @@ class ChatSession:
         if self.max_history_turns == 0:
             return
         self._history.append((question, answer))
+        # Оставляем последние N реплик, иначе prompt и prefill будут постоянно расти.
         del self._history[: -self.max_history_turns]
 
     def ask(self, question: str) -> ChatReply:
@@ -76,6 +77,7 @@ class ChatSession:
         )
 
         def record_answer() -> Iterator[str]:
+            # Полный ответ нужен для истории, хотя пользователю он уходит по частям.
             answer_parts: list[str] = []
             completed = False
             try:
@@ -169,6 +171,8 @@ def run_interactive(
         print("\nАссистент: ", end="", flush=True)
         try:
             if stream:
+                # Первый фрагмент включает поиск и prefill — эту паузу видит
+                # пользователь.
                 stream_started_at = perf_counter()
                 first_chunk_seconds: float | None = None
                 reply = session.ask_stream(question)

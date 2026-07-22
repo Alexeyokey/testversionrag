@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 
 METRIC_NAMES = JUDGE_METRICS
+# Для настройки поиска важны полнота, порядок контекста и точность ответа.
 TUNING_METRICS = ("context_recall", "context_precision", "answer_accuracy")
 DEFAULT_VECTOR_WEIGHTS = (0.2, 0.4, 0.5, 0.6, 0.8)
 
@@ -121,6 +122,7 @@ def run_retrieval_tuning(
     if service_factory is None:
         from rag_app.service import RagService
 
+        # Переиспользуем загруженные модели: между прогонами меняются только веса.
         shared_service = RagService(settings)
 
     # Production RAGAS scorers are built inside each evaluation event loop.
@@ -158,6 +160,8 @@ def run_retrieval_tuning(
             )
             service = shared_service
         else:
+            # В тестах factory может подставить отдельный сервис для каждой
+            # конфигурации.
             assert service_factory is not None
             service = service_factory(config_settings)
         samples = collect_rag_samples(
@@ -258,6 +262,7 @@ def comparison_rows(
             for metric_name in TUNING_METRICS
             if row[f"{tool_name}_{metric_name}"] is not None
         ]
+        # Пропущенные метрики остаются null и не участвуют в tuning score.
         row["tuning_score"] = (
             sum(tuning_scores) / len(tuning_scores) if tuning_scores else None
         )

@@ -95,6 +95,7 @@ def build_vllm_deepeval_judge(settings: Settings) -> Any:
             }
             if schema is not None:
                 schema_type = schema if isinstance(schema, type) else type(schema)
+                # vLLM проверит JSON по той же схеме, которую затем разбирает DeepEval.
                 arguments["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {
@@ -122,6 +123,8 @@ def build_vllm_deepeval_judge(settings: Settings) -> Any:
             return self._parse_content(content, schema)
 
         async def a_generate(self, prompt: str, schema: Any | None = None) -> Any:
+            # Клиент синхронный; worker thread сохраняет async-интерфейс без
+            # отдельного AsyncOpenAI.
             return await asyncio.to_thread(self.generate, prompt, schema)
 
     return VllmDeepEvalJudge()
@@ -260,6 +263,7 @@ def evaluate_samples_with_deepeval(
         }
         metric_errors: dict[str, str] = {}
         metric_reasons: dict[str, str] = {}
+        # После measure() score и reason хранятся в самом объекте метрики.
         for metric_name in enabled_metric_names:
             if progress:
                 progress(f"[DeepEval {index}/{total}] Метрика: {metric_name}")

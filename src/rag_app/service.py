@@ -37,6 +37,7 @@ class RagService:
 
     @property
     def embedding_model(self) -> EmbeddingModel:
+        # Загружаем embedding-модель только перед первой операцией, где она нужна.
         if self._embedding_model is None:
             self._embedding_model = EmbeddingModel(
                 self.settings.embedding_model,
@@ -115,6 +116,8 @@ class RagService:
 
     def search(self, query: str) -> list[Document]:
         if self._retriever is None:
+            # BM25 строится по снимку коллекции, vector search обращается в тот же
+            # Qdrant.
             documents = self._store.load_documents()
             if not documents:
                 return []
@@ -155,6 +158,7 @@ class RagService:
         updated_settings.validate()
         self.settings = updated_settings
         if self._retriever is not None:
+            # Меняем лёгкую обёртку, не пересоздавая BM25 и reranker.
             self._retriever = self._retriever.with_weights(
                 vector_weight=vector_weight,
                 bm25_weight=bm25_weight,

@@ -22,6 +22,7 @@ class VectorStore:
         if exists:
             collection = self.client.get_collection(self.collection_name)
             vectors_config = collection.config.params.vectors
+            # После смены размерности embedding-модели коллекцию нужно пересоздать.
             if (
                 isinstance(vectors_config, models.VectorParams)
                 and vectors_config.size != vector_size
@@ -61,6 +62,7 @@ class VectorStore:
             )
             for document, vector in zip(documents, vectors, strict=True)
         ]
+        # Небольшие batch не раздувают HTTP-запрос и память клиента.
         for start in range(0, len(points), 128):
             self.client.upsert(
                 collection_name=self.collection_name,
@@ -76,6 +78,7 @@ class VectorStore:
             collection_name=self.collection_name,
             points_selector=models.FilterSelector(
                 filter=models.Filter(
+                    # should — это OR: удаляем только перечисленные источники.
                     should=[
                         models.FieldCondition(
                             key="source_id",
@@ -110,6 +113,7 @@ class VectorStore:
         documents: list[Document] = []
         offset = None
         while True:
+            # Для BM25 нужен весь корпус, поэтому читаем коллекцию через scroll.
             points, offset = self.client.scroll(
                 collection_name=self.collection_name,
                 limit=256,

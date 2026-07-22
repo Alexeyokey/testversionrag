@@ -11,6 +11,7 @@ def _last_token_pool(
     last_hidden_states: torch.Tensor,
     attention_mask: torch.Tensor,
 ) -> torch.Tensor:
+    # При left padding берём последний токен сразу; ниже обработан и right padding.
     if attention_mask[:, -1].sum() == attention_mask.shape[0]:
         return last_hidden_states[:, -1]
 
@@ -37,6 +38,8 @@ class EmbeddingModel:
             use_fast=False,
         )
         if self.tokenizer.pad_token is None:
+            # У decoder-моделей часто нет PAD; attention mask не даст EOS попасть
+            # в pooling.
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         dtype = torch.float16 if self.device == "cuda" else torch.float32
@@ -71,5 +74,7 @@ class EmbeddingModel:
         with torch.inference_mode():
             outputs = self.model(**batch)
             embeddings = _last_token_pool(outputs.last_hidden_state, batch["attention_mask"])
+            # Qdrant сравнивает векторы по cosine distance, поэтому нормализуем их
+            # здесь.
             embeddings = functional.normalize(embeddings, p=2, dim=1)
         return embeddings.detach().cpu().float().tolist()

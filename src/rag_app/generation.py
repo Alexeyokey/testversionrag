@@ -37,6 +37,7 @@ def check_vllm_server(
 ) -> dict[str, Any]:
     """Проверить версию, опубликованную модель и генерацию через API vLLM."""
     api_root = base_url.rstrip("/")
+    # /version находится в корне сервера, OpenAI endpoints — внутри /v1.
     server_root = api_root.removesuffix("/v1")
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -148,6 +149,7 @@ class TextGenerator:
                 {"role": "user", "content": human_content},
             ],
             "max_tokens": self.max_new_tokens,
+            # Отключаем thinking и через template, и через /no_think в prompt.
             "chat_template_kwargs": {"enable_thinking": self.thinking},
             "temperature": self.temperature,
             "stream": stream,
@@ -212,6 +214,7 @@ class TextGenerator:
                 stream=True,
             )
             response.raise_for_status()
+            # В OpenAI SSE полезные строки начинаются с data:, [DONE] закрывает поток.
             for raw_line in response.iter_lines(decode_unicode=True):
                 if not raw_line:
                     continue

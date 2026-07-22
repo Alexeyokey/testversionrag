@@ -10,6 +10,7 @@ from langchain_core.documents import Document
 
 
 def tokenize(text: str) -> list[str]:
+    # Простой Unicode tokenizer оставляет BM25 быстрым и независимым от моделей.
     return re.findall(r"\w+", text.lower(), flags=re.UNICODE)
 
 
@@ -43,6 +44,7 @@ def format_documents(documents: list[Document]) -> str:
 
 class BM25Index:
     def __init__(self, documents: list[Document]) -> None:
+        # Считаем статистику корпуса один раз, а не заново для каждого вопроса.
         self.documents = documents
         self.document_terms = [Counter(tokenize(item.page_content)) for item in documents]
         self.document_lengths = [sum(terms.values()) for terms in self.document_terms]
@@ -65,6 +67,7 @@ class BM25Index:
         query_tokens = tokenize(query)
         if not query_tokens:
             return []
+        # k1 ограничивает пользу повторов слова, b выравнивает документы по длине.
         k1, b = 1.5, 0.75
         scored: list[tuple[float, int, Document]] = []
         for index, terms in enumerate(self.document_terms):
@@ -147,6 +150,7 @@ class HybridRetriever:
         scores: dict[str, float] = {}
         by_key: dict[str, Document] = {}
 
+        # RRF смешивает позиции, а не несопоставимые raw scores Qdrant и BM25.
         for rank, document in enumerate(vector_documents, start=1):
             key = document_key(document)
             by_key[key] = document
@@ -156,6 +160,7 @@ class HybridRetriever:
         for rank, document in enumerate(bm25_documents, start=1):
             key = document_key(document)
             if key in by_key:
+                # Один doc_id из двух каналов должен остаться одним кандидатом.
                 by_key[key].metadata.update(document.metadata)
             else:
                 by_key[key] = document

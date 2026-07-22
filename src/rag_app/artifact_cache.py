@@ -90,6 +90,7 @@ class ArtifactCache:
                 json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
                 encoding="utf-8",
             )
+            # Запись через временный файл не оставит битый JSON, если процесс прервётся.
             temporary_path.replace(cache_path)
         except (OSError, TypeError, ValueError) as error:
             self.write_errors.append(f"{type(error).__name__}: {error}")
@@ -124,6 +125,7 @@ def _cache_identity(
     evaluator_config: Mapping[str, Any],
     inputs: Mapping[str, Any],
 ) -> str:
+    # Смена модели, версии RAGAS или prompt должна инвалидировать старый артефакт.
     raw_identity = json.dumps(
         {
             "schema_version": CACHE_SCHEMA_VERSION,

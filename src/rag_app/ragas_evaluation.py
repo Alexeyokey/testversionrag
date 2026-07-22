@@ -177,6 +177,7 @@ class _CachedRagasArtifact:
         output_model: Any,
     ) -> Any:
         assert self._session is not None
+        # Один prompt может вызвать LLM несколько раз; position выбирает нужный ответ.
         session_key = json.dumps(
             inputs,
             ensure_ascii=False,
@@ -244,6 +245,7 @@ class _ArtifactCachingLLM:
 
     async def agenerate(self, *args: Any, **kwargs: Any) -> Any:
         output_model = _llm_output_model(args, kwargs)
+        # Кэшируем только выбранный промежуточный ответ, но не verdict и не score.
         if getattr(output_model, "__name__", None) != self._output_model_name:
             return await self._llm.agenerate(*args, **kwargs)
 
@@ -295,6 +297,7 @@ class _ParallelContextPrecision:
         semaphore = asyncio.Semaphore(self._concurrency)
 
         async def evaluate_context(context: str) -> int:
+            # Semaphore бережёт vLLM, а gather сохраняет исходный порядок чанков.
             async with semaphore:
                 result = await self._scorer.ascore(
                     user_input=user_input,
@@ -316,6 +319,7 @@ class _ParallelContextPrecision:
 
     @staticmethod
     def _calculate_average_precision(verdicts: list[int]) -> float:
+        # Чем позже найден полезный чанк, тем меньше его вклад в Average Precision.
         relevant_so_far = 0
         weighted_precision = 0.0
         for rank, verdict in enumerate(verdicts, start=1):
@@ -378,6 +382,7 @@ def _cache_llm_artifact(
         evaluator_config=evaluator_config,
         refresh=refresh,
     )
+    # Оборачиваем LLM одной метрики, чтобы её кэш не перехватывал чужие ответы.
     scorer.llm = _ArtifactCachingLLM(
         llm,
         artifact,
@@ -482,6 +487,7 @@ def build_ragas_scorers(
 
             async def aembed_text(self, text: str, **kwargs: Any) -> list[float]:
                 del kwargs
+                # Torch работает синхронно, поэтому не блокируем им event loop.
                 return await asyncio.to_thread(self.model.embed_query, text)
 
             def embed_texts(
@@ -596,6 +602,7 @@ async def _score_metric_with_retries(
 
 
 def _exception_chain(error: BaseException) -> tuple[BaseException, ...]:
+    # До сетевой причины приходится пройти обёртки Instructor и OpenAI.
     chain: list[BaseException] = []
     seen: set[int] = set()
     current: BaseException | None = error
@@ -731,6 +738,7 @@ async def _evaluate_samples_with_ragas_async(
         refresh_artifact_cache=refresh_artifact_cache,
     )
     try:
+        # Создаём, используем и закрываем AsyncOpenAI в одном event loop.
         return await _evaluate_samples_with_active_scorers(
             samples,
             active_scorers,
@@ -807,6 +815,7 @@ async def _evaluate_samples_with_active_scorers(
         metric_reasons: dict[str, str] = {}
         artifacts: dict[str, Any] = {}
         cached_artifacts: list[str] = []
+        # Метрики идут по очереди; только Context Precision параллелит чанки внутри.
         for metric_name in enabled_metric_names:
             if progress:
                 progress(f"[RAGAS {index}/{total}] Метрика: {metric_name}")
