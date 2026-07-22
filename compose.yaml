@@ -109,6 +109,16 @@ services:
         condition: service_started
       vllm:
         condition: service_healthy
+    # vLLM с TP=1 работает на GPU 0. Отдельная GPU для app ускоряет embedding
+    # запроса и reranker, которые иначе выполнялись бы на CPU.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - "${RAG_RETRIEVAL_GPU_DEVICE_ID:-1}"
+              capabilities: [gpu]
 
 volumes:
   qdrant-data:
