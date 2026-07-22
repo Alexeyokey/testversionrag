@@ -232,52 +232,29 @@ class DocumentProcessor:
 
     def __init__(
         self,
-        chunk_size: int | None = None,
-        chunk_overlap: int | None = None,
-        docling_chunk_tokens: int = 1024,
-        embedding_model: str | None = None,
-        trust_remote_code: bool | None = None,
+        settings: Settings,
+        *,
         tokenizer: PreTrainedTokenizerBase | None = None,
     ) -> None:
         """Настроить обычный и токен-ориентированный разделители текста."""
-        runtime_settings = Settings.from_env()
-        resolved_chunk_size = (
-            runtime_settings.chunk_size if chunk_size is None else chunk_size
-        )
-        resolved_chunk_overlap = (
-            runtime_settings.chunk_overlap
-            if chunk_overlap is None
-            else chunk_overlap
-        )
-        if resolved_chunk_size <= 0:
-            raise ValueError("chunk_size должен быть больше нуля")
-        if resolved_chunk_overlap < 0:
-            raise ValueError("chunk_overlap не может быть отрицательным")
-        if resolved_chunk_overlap >= resolved_chunk_size:
-            raise ValueError("chunk_overlap должен быть меньше chunk_size")
-        if docling_chunk_tokens <= 0:
-            raise ValueError("docling_chunk_tokens должен быть больше нуля")
+        settings.validate()
 
         # Для простого текста размер и overlap измеряются в символах. Docling-файлы
         # ниже делятся отдельно по токенам embedding-модели через HybridChunker.
         self._splitter = RecursiveCharacterTextSplitter(
-            chunk_size=resolved_chunk_size,
-            chunk_overlap=resolved_chunk_overlap,
+            chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
             separators=_MULTILINGUAL_SEPARATORS,
             length_function=len,
             is_separator_regex=False,
         )
 
-        self.docling_chunk_tokens = docling_chunk_tokens
-        self.embedding_model = embedding_model or runtime_settings.embedding_model
+        self.docling_chunk_tokens = settings.docling_chunk_tokens
+        self.embedding_model = settings.embedding_model
         # RagService передаёт сюда уже загруженный токенизатор embedding-модели,
         # чтобы чанкование и последующее построение векторов считали токены одинаково.
         self._hf_tokenizer = tokenizer
-        self.trust_remote_code = (
-            runtime_settings.trust_remote_code
-            if trust_remote_code is None
-            else trust_remote_code
-        )
+        self.trust_remote_code = settings.trust_remote_code
 
         # Тяжёлые компоненты создаются только при первом Docling-файле. При работе
         # исключительно с TXT/Markdown/RST/RTF токенизатор здесь не загружается.

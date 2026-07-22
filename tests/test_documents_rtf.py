@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from rag_app.config import Settings
 from rag_app.documents import DocumentProcessor, _rtf_to_text
 
 
@@ -51,7 +52,7 @@ def test_rtf_without_ansicpg_uses_cyrillic_font_charset() -> None:
 def test_rtf_file_uses_text_splitter_and_receives_metadata(tmp_path: Path) -> None:
     path = tmp_path / "law.rtf"
     path.write_bytes(_sample_rtf())
-    processor = DocumentProcessor(chunk_size=80, chunk_overlap=10)
+    processor = DocumentProcessor(Settings(chunk_size=80, chunk_overlap=10))
 
     documents = processor.load_directory(tmp_path)
 

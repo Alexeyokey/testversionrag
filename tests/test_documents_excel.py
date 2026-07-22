@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from docling.datamodel.base_models import InputFormat
+from rag_app.config import Settings
 from rag_app.documents import DocumentProcessor
 
 
@@ -43,7 +44,7 @@ def test_text_file_gets_chunk_metadata_and_respects_zero_overlap(
 ) -> None:
     path = tmp_path / "notes.txt"
     path.write_text("Первый абзац. Второй абзац. Третий абзац.", encoding="utf-8")
-    processor = DocumentProcessor(chunk_size=20, chunk_overlap=0)
+    processor = DocumentProcessor(Settings(chunk_size=20, chunk_overlap=0))
 
     documents = processor.load(path)
 
@@ -69,7 +70,7 @@ def test_docling_chunks_preserve_repeated_rows_and_receive_stable_ids(
         _Chunk("Общая   выручка: 100", _Meta()),
         _Chunk("Максимальная выручка: 60", _Meta()),
     ]
-    processor = DocumentProcessor(chunk_size=100, chunk_overlap=0)
+    processor = DocumentProcessor(Settings(chunk_size=100, chunk_overlap=0))
     processor._docling_converter = _Converter(converted_document)
     processor._docling_chunker = _Chunker(chunks)
 
@@ -89,7 +90,7 @@ def test_docling_chunks_preserve_repeated_rows_and_receive_stable_ids(
 def test_pdf_is_processed_by_docling(tmp_path: Path) -> None:
     path = tmp_path / "report.pdf"
     path.write_bytes(b"fake pdf")
-    processor = DocumentProcessor(chunk_size=100, chunk_overlap=0)
+    processor = DocumentProcessor(Settings(chunk_size=100, chunk_overlap=0))
     processor._docling_converter = _Converter(SimpleNamespace())
     processor._docling_chunker = _Chunker(
         [_Chunk("Выручка по региону Урал: 638 000", _Meta())]
@@ -111,7 +112,7 @@ def test_docling_pdf_pipeline_disables_ocr(monkeypatch) -> None:
             captured.update(kwargs)
 
     monkeypatch.setattr("rag_app.documents.DocumentConverter", _ConfiguredConverter)
-    processor = DocumentProcessor(chunk_size=100, chunk_overlap=0)
+    processor = DocumentProcessor(Settings(chunk_size=100, chunk_overlap=0))
     processor._docling_chunker = object()
 
     processor._get_docling_components()

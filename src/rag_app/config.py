@@ -30,12 +30,12 @@ class Settings:
     chunk_overlap: int = 50
     docling_chunk_tokens: int = 1024
     embedding_batch_size: int = 32
-    top_k: int = 3
-    candidate_k: int = 8
+    top_k: int = 5
+    candidate_k: int = 25
     vector_weight: float = 0.6
     bm25_weight: float = 0.4
     rank_constant: int = 10
-    max_new_tokens: int = 256
+    max_new_tokens: int = 1024
     ragas_judge_model: str | None = None
     ragas_threshold: float = 0.7
     ragas_max_tokens: int = 2048

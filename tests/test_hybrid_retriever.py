@@ -44,6 +44,22 @@ def test_hybrid_retriever_merges_vector_and_bm25_by_doc_id() -> None:
     assert all("_hybrid_score" in document.metadata for document in result)
 
 
+def test_hybrid_retriever_weight_copy_reuses_heavy_components() -> None:
+    document = _document("revenue", "Общая выручка", 1)
+    retriever = HybridRetriever(
+        documents=[document],
+        vector_search=lambda _query, _limit: [document],
+    )
+
+    weighted = retriever.with_weights(vector_weight=0.2, bm25_weight=0.8)
+
+    assert weighted is not retriever
+    assert weighted.bm25 is retriever.bm25
+    assert weighted.reranker is retriever.reranker
+    assert weighted.vector_weight == 0.2
+    assert weighted.bm25_weight == 0.8
+
+
 def test_format_documents_includes_source_location() -> None:
     context = format_documents([_document("revenue", "Текст чанка", 3)])
 

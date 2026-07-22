@@ -4,6 +4,7 @@ import math
 import re
 from collections import Counter
 from collections.abc import Callable
+from copy import copy
 
 from langchain_core.documents import Document
 
@@ -95,8 +96,8 @@ class HybridRetriever:
         vector_search: Callable[[str, int], list[Document]],
         reranker=None,
         *,
-        top_k: int = 3,
-        candidate_k: int = 8,
+        top_k: int = 5,
+        candidate_k: int = 25,
         rank_constant: int = 10,
         vector_weight: float = 0.6,
         bm25_weight: float = 0.4,
@@ -125,6 +126,18 @@ class HybridRetriever:
         if self.reranker is not None:
             return self.reranker.rerank(query, candidates, self.top_k)
         return candidates[: self.top_k]
+
+    def with_weights(
+        self,
+        *,
+        vector_weight: float,
+        bm25_weight: float,
+    ) -> "HybridRetriever":
+        """Создать легкую копию, переиспользовав BM25 и reranker."""
+        retriever = copy(self)
+        retriever.vector_weight = vector_weight
+        retriever.bm25_weight = bm25_weight
+        return retriever
 
     def _merge(
         self,

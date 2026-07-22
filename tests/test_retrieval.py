@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from langchain_core.documents import Document
 
+from rag_app.config import Settings
 from rag_app.documents import DocumentProcessor
 from rag_app.embeddings import EmbeddingModel
 from rag_app.vector_store import VectorStore
@@ -53,10 +54,11 @@ def xlsx_documents(embedding_model: EmbeddingModel) -> list[Document]:
         pytest.fail(f"В каталоге {directory} не найдены XLSX-файлы")
 
     processor = DocumentProcessor(
-        chunk_overlap=0,
-        docling_chunk_tokens=int(os.getenv("RAG_TEST_CHUNK_TOKENS", "512")),
+        Settings(
+            chunk_overlap=0,
+            docling_chunk_tokens=int(os.getenv("RAG_TEST_CHUNK_TOKENS", "512")),
+        ),
         tokenizer=embedding_model.tokenizer,
-        trust_remote_code=True,
     )
     documents: list[Document] = []
 

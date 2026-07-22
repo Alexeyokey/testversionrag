@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from langchain_core.documents import Document
@@ -47,11 +48,7 @@ class RagService:
     def index(self, source: str, recreate: bool = False) -> int:
         embedding_model = self.embedding_model
         processor = DocumentProcessor(
-            chunk_size=self.settings.chunk_size,
-            chunk_overlap=self.settings.chunk_overlap,
-            docling_chunk_tokens=self.settings.docling_chunk_tokens,
-            embedding_model=self.settings.embedding_model,
-            trust_remote_code=self.settings.trust_remote_code,
+            self.settings,
             tokenizer=embedding_model.tokenizer,
         )
 
@@ -108,7 +105,6 @@ class RagService:
             self._generator = TextGenerator(
                 self.settings.generation_model,
                 max_new_tokens=self.settings.max_new_tokens,
-                trust_remote_code=self.settings.trust_remote_code,
                 base_url=self.settings.vllm_base_url,
                 api_key=self.settings.vllm_api_key,
                 temperature=self.settings.temperature,
@@ -144,6 +140,26 @@ class RagService:
             )
         return self._retriever.retrieve(query)
 
+    def set_retrieval_weights(
+        self,
+        *,
+        vector_weight: float,
+        bm25_weight: float,
+    ) -> None:
+        """Изменить только веса уже загруженного hybrid retrieval."""
+        updated_settings = replace(
+            self.settings,
+            vector_weight=vector_weight,
+            bm25_weight=bm25_weight,
+        )
+        updated_settings.validate()
+        self.settings = updated_settings
+        if self._retriever is not None:
+            self._retriever = self._retriever.with_weights(
+                vector_weight=vector_weight,
+                bm25_weight=bm25_weight,
+            )
+
     def ask(
         self,
         question: str,
@@ -151,12 +167,26 @@ class RagService:
         chat_history: str = "Предыдущий разговор отсутствует.",
     ) -> tuple[str, list[Document]]:
         documents = self.search(question)
-        answer = self.generator.answer(
+        answer = self.answer_from_documents(
+            question,
+            documents,
+            chat_history=chat_history,
+        )
+        return answer, documents
+
+    def answer_from_documents(
+        self,
+        question: str,
+        documents: list[Document],
+        *,
+        chat_history: str = "Предыдущий разговор отсутствует.",
+    ) -> str:
+        """Сгенерировать ответ по уже извлечённому контексту без повторного поиска."""
+        return self.generator.answer(
             question,
             format_documents(documents),
             chat_history=chat_history,
         )
-        return answer, documents
 
     def ask_stream(
         self,

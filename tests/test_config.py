@@ -25,6 +25,14 @@ def test_default_docling_chunk_size_is_1024(monkeypatch) -> None:
     assert settings.docling_chunk_tokens == 1024
 
 
+def test_python_defaults_match_env_example_retrieval_and_generation() -> None:
+    settings = Settings()
+
+    assert settings.top_k == 5
+    assert settings.candidate_k == 25
+    assert settings.max_new_tokens == 1024
+
+
 def test_legacy_metric_cache_environment_variables_are_ignored(monkeypatch) -> None:
     monkeypatch.delenv("EVALUATION_ARTIFACT_CACHE_ENABLED", raising=False)
     monkeypatch.delenv("EVALUATION_ARTIFACT_CACHE_DIR", raising=False)
