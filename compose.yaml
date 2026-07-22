@@ -78,6 +78,20 @@ services:
 
   app:
     build: .
+    command:
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --data-root
+      - /data
+      - --history-turns
+      - "${RAG_API_HISTORY_TURNS:-6}"
+      - --max-concurrent-queries
+      - "${RAG_API_MAX_CONCURRENT_QUERIES:-2}"
+    ports:
+      - "${RAG_API_PORT:-8080}:8080"
     env_file:
       - .env
     environment:
@@ -109,6 +123,17 @@ services:
         condition: service_started
       vllm:
         condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request;
+          urllib.request.urlopen('http://localhost:8080/health', timeout=2)"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 180s
     # vLLM с TP=1 работает на GPU 0. Отдельная GPU для app ускоряет embedding
     # запроса и reranker, которые иначе выполнялись бы на CPU.
     deploy:
