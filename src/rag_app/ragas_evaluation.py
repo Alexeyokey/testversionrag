@@ -17,6 +17,7 @@ from rag_app.evaluation import (
     judge_outcome,
     select_judge_metrics,
     summarize_judge_results,
+    write_failed_results_report,
 )
 from rag_app.artifact_cache import (
     ArtifactCache,
@@ -914,6 +915,7 @@ def write_ragas_report(
         json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False),
         encoding="utf-8",
     )
+    write_failed_results_report(output_path, payload)
     return output_path
 
 

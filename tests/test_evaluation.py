@@ -79,6 +79,10 @@ def test_evaluate_separates_answer_context_and_source_checks(tmp_path: Path) -> 
     assert summary["passed"] == 1
     assert summary["failed"] == 1
     assert json.loads(report_path.read_text(encoding="utf-8"))["summary"]["total"] == 2
+    failed_payload = json.loads(
+        (tmp_path / "report-failed.json").read_text(encoding="utf-8")
+    )
+    assert [item["question"] for item in failed_payload["results"]] == ["Ошибка"]
 
 
 def test_evaluate_reports_current_question() -> None:

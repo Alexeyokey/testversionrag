@@ -402,6 +402,29 @@ def write_report(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    write_failed_results_report(output_path, payload)
+    return output_path
+
+
+def write_failed_results_report(
+    source_path: str | Path,
+    payload: Mapping[str, Any],
+) -> Path:
+    """Сохранить полные записи с ``passed == false`` рядом с общим отчётом."""
+    filtered_payload = {
+        **payload,
+        "results": [
+            result for result in payload["results"] if not result["passed"]
+        ],
+    }
+    source_path = Path(source_path)
+    output_path = source_path.with_name(
+        f"{source_path.stem}-failed{source_path.suffix}"
+    )
+    output_path.write_text(
+        json.dumps(filtered_payload, ensure_ascii=False, indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
     return output_path
 
 
